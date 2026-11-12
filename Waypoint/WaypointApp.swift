@@ -1,4 +1,5 @@
 import ARKit
+import MapKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -14,6 +15,7 @@ struct WalkScreen: View {
     @State private var model = WalkModel()
     @State private var showingImporter = false
     @State private var downloadLink = ""
+    @State private var destinationQuery = ""
 
     var body: some View {
         @Bindable var model = model
@@ -26,24 +28,39 @@ struct WalkScreen: View {
                     .pickerStyle(.segmented)
                     Text(model.mode == .practice
                          ? "Try a simulated walk with turn buttons, AirPods, or your iPhone camera."
-                         : "Follow a saved GPX route with live location. Test on a supervised pedestrian path.")
+                         : "Choose a destination or import a saved route. Try a familiar pedestrian path first.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                     if let route = model.route {
-                        RouteSketch(route: route, step: model.step, position: model.latestPoint)
-                            .frame(height: 150)
+                        if model.mode == .walk {
+                            Map(interactionModes: [.pan, .zoom]) {
+                                MapPolyline(coordinates: route.points.map(\.coordinate))
+                                    .stroke(.blue, lineWidth: 6)
+                                if let first = route.points.first, let last = route.points.last {
+                                    Marker("Start", systemImage: "location", coordinate: first.coordinate)
+                                    Marker("Destination", systemImage: "flag", coordinate: last.coordinate)
+                                }
+                                if let current = model.latestPoint {
+                                    Annotation("Current location", coordinate: current.coordinate) {
+                                        Circle().fill(.blue).strokeBorder(.white, lineWidth: 2)
+                                            .frame(width: 16, height: 16)
+                                    }
+                                }
+                            }
+                            .id(route.name + String(describing: route.points.first) + String(describing: route.points.last))
+                            .frame(height: 200)
+                            .clipShape(.rect(cornerRadius: 16))
                             .accessibilityHidden(true)
+                        } else {
+                            RouteSketch(route: route, step: model.step, position: model.latestPoint)
+                                .frame(height: 150)
+                                .accessibilityHidden(true)
+                        }
                         Text("\(route.name) · \(Int(route.length.rounded())) m")
                             .font(.subheadline)
                     }
                     if model.mode == .walk && !model.running { routeControls }
                     if model.running {
-                        if !model.arrived {
-                            Text("Leg \(model.step + 1) of \((model.route?.points.count ?? 1) - 1)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Text(model.instruction).font(.title2.bold())
                         if !model.arrived {
                             Picker("Guidance audio", selection: $model.audioStyle) {
                                 ForEach(WalkModel.AudioStyle.allCases, id: \.self) { Text($0.rawValue) }
@@ -71,7 +88,7 @@ struct WalkScreen: View {
                     } else {
                         Button(model.mode == .practice ? "Start practice" : "Start walk", action: model.begin)
                             .buttonStyle(.borderedProminent)
-                            .disabled(model.route == nil)
+                            .disabled(model.route == nil || model.planning)
                     }
                     Text(model.status).font(.callout)
                 }
@@ -79,7 +96,11 @@ struct WalkScreen: View {
                 .padding()
                 .frame(maxWidth: .infinity)
             }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if model.running { directionsBanner }
+            }
             .navigationTitle("Waypoint")
+            .navigationBarTitleDisplayMode(.inline)
             .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.init(filenameExtension: "gpx") ?? .xml]) { result in
                 switch result {
                 case .success(let url): model.importGPX(from: url)
@@ -92,20 +113,83 @@ struct WalkScreen: View {
         }
     }
 
+    private var directionsBanner: some View {
+        HStack(spacing: 16) {
+            Image(systemName: model.maneuverIcon)
+                .font(.system(size: 30, weight: .semibold))
+                .frame(width: 48)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(model.instruction)
+                    .font(.title3.bold())
+                    .accessibilityAddTraits(.isHeader)
+                if let distance = model.distanceToTurn {
+                    Text("\(Int(distance.rounded())) m to next point")
+                        .font(.subheadline.weight(.medium))
+                }
+                if let next = model.nextManeuver {
+                    Text(next).font(.subheadline)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(.white)
+        .padding(16)
+        .frame(maxWidth: 580, alignment: .leading)
+        .background(Color(red: 0.04, green: 0.29, blue: 0.24), in: .rect(cornerRadius: 18))
+        .padding(.horizontal)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity)
+        .background(.background)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("directionsBanner")
+    }
+
     private var routeControls: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Button("Import GPX from Files") { showingImporter = true }
-            TextField("HTTPS GPX link", text: $downloadLink)
-                .keyboardType(.URL)
-                .textContentType(.URL)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
+            TextField("Search for a destination", text: $destinationQuery)
                 .textFieldStyle(.roundedBorder)
-            Button("Download for offline use") { model.downloadGPX(downloadLink) }
-                .disabled(downloadLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .submitLabel(.search)
+                .onSubmit(search)
+            Button("Search from current location", action: search)
+                .disabled(model.planning || destinationQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            if model.planning { ProgressView() }
+            ForEach(Array(model.destinations.enumerated()), id: \.offset) { _, destination in
+                Button {
+                    Task { await model.planWalk(to: destination) }
+                } label: {
+                    VStack(alignment: .leading) {
+                        Text(destination.name ?? "Destination")
+                        if #available(iOS 26, *), let address = destination.address?.fullAddress {
+                            Text(address).font(.caption)
+                        } else if let subtitle = destination.placemark.title {
+                            Text(subtitle).font(.caption)
+                        }
+                    }
+                }
+                .disabled(model.planning)
+            }
+            DisclosureGroup("Use a saved GPX route") {
+                Button("Import GPX from Files") { showingImporter = true }
+                TextField("HTTPS GPX link", text: $downloadLink)
+                    .keyboardType(.URL)
+                    .textContentType(.URL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .textFieldStyle(.roundedBorder)
+                Button("Download for offline use") { model.downloadGPX(downloadLink) }
+                    .disabled(downloadLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .disabled(model.planning)
             if !model.routeMessage.isEmpty { Text(model.routeMessage).font(.caption) }
         }
         .buttonStyle(.bordered)
+    }
+
+    private func search() {
+        let query = destinationQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return }
+        Task { await model.searchDestinations(query) }
     }
 
     private var practiceTurns: some View {
@@ -124,17 +208,26 @@ struct WalkScreen: View {
                     .frame(maxWidth: .infinity)
                     .overlay(alignment: .bottom) {
                         if let turn = model.cameraTurn {
-                            Label(cameraDirection(turn), systemImage: cameraArrow(turn))
-                                .font(.headline)
+                            VStack(spacing: 8) {
+                                Image(systemName: "arrow.up")
+                                    .font(.system(size: 46, weight: .bold))
+                                    .rotationEffect(.degrees(turn))
+                                    .accessibilityHidden(true)
+                                Text(cameraDirection(turn))
+                                    .font(.headline)
+                            }
+                                .accessibilityElement(children: .combine)
                                 .padding(12)
                                 .foregroundStyle(.white)
-                                .background(.black.opacity(0.85), in: Capsule())
+                                .background(abs(turn) <= 14 ? Color(red: 0.04, green: 0.29, blue: 0.24) : .black.opacity(0.85), in: .rect(cornerRadius: 18))
                                 .padding()
                                 .accessibilityAddTraits(.updatesFrequently)
                         }
                     }
                     .clipShape(.rect(cornerRadius: 12))
-                Button("Align camera", action: model.alignCamera).disabled(model.cameraYaw == nil)
+                if model.mode == .practice {
+                    Button("Align camera", action: model.alignCamera).disabled(model.cameraYaw == nil)
+                }
                 if !model.cameraGuidesAudio && model.cameraTurn != nil {
                     Button("Use camera for audio guidance", action: model.useCameraForAudio)
                 }
@@ -156,12 +249,6 @@ struct WalkScreen: View {
         return angle < 0 ? "Route to the left" : "Route to the right"
     }
 
-    private func cameraArrow(_ angle: Double) -> String {
-        if abs(angle) <= 14 { return "arrow.up" }
-        if abs(angle) > 155 { return "arrow.down" }
-        return angle < 0 ? "arrow.left" : "arrow.right"
-    }
-
     private var audioControls: some View {
         VStack(alignment: .leading, spacing: 9) {
             if !model.audioOutput.isEmpty { Text("Audio output: " + model.audioOutput) }
@@ -180,7 +267,9 @@ struct WalkScreen: View {
             if model.usingHeadphones {
                 Text(model.mode == .practice
                      ? "Face forward, then align. Turn your head to follow the cue."
-                     : "At the start of this leg, face along the path and align.")
+                     : model.cameraView == nil
+                     ? "Hold the phone flat. Point its top edge where you’re facing, then tap Align AirPods."
+                     : "Hold the rear camera in the direction you’re facing, then tap Align AirPods.")
                 if let yaw = model.headphoneYaw {
                     Text("Live head angle: \(Int(yaw.rounded()))°")
                         .monospacedDigit()

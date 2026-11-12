@@ -38,6 +38,50 @@ struct WalkRoute: Codable {
         zip(points, points.dropFirst()).reduce(0) { $0 + $1.0.distance(to: $1.1) }
     }
 
+    static func walking(name: String, points: [Point]) throws -> WalkRoute {
+        let distinct = points.reduce(into: [Point]()) { result, point in
+            if result.last.map({ $0.distance(to: point) >= 1 }) ?? true { result.append(point) }
+        }
+        guard distinct.count >= 2 else { throw GPXError.invalid }
+
+        // Keep meaningful changes in path geometry while removing densely spaced map vertices.
+        var retained: Set<Int> = [0, distinct.count - 1]
+        var ranges = [(0, distinct.count - 1)]
+        let route = WalkRoute(name: name, points: distinct)
+        while let (first, last) = ranges.popLast() {
+            guard last - first > 1 else { continue }
+            var greatestDistance = 3.0
+            var split: Int?
+            for index in (first + 1)..<last {
+                let distance = route.projection(of: distinct[index], from: first, to: last).distance
+                if distance > greatestDistance {
+                    greatestDistance = distance
+                    split = index
+                }
+            }
+            if let split {
+                retained.insert(split)
+                ranges.append((first, split))
+                ranges.append((split, last))
+            }
+        }
+        return WalkRoute(name: name, points: retained.sorted().map { distinct[$0] })
+    }
+
+    func projection(of point: Point, from step: Int, to endIndex: Int? = nil)
+        -> (distance: Double, fraction: Double, length: Double) {
+        let start = points[step]
+        let end = points[endIndex ?? step + 1]
+        let length = start.distance(to: end)
+        guard length > 0 else { return (start.distance(to: point), 0, 0) }
+        let angle = signedAngle(start.bearing(to: point) - start.bearing(to: end)) * .pi / 180
+        let radialDistance = start.distance(to: point)
+        let along = radialDistance * cos(angle)
+        let across = radialDistance * sin(angle)
+        let clamped = min(length, max(0, along))
+        return (hypot(across, along - clamped), along / length, length)
+    }
+
     func heading(from step: Int) -> Double {
         points[step].bearing(to: points[step + 1])
     }

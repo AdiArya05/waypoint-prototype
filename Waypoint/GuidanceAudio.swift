@@ -4,31 +4,36 @@ import Foundation
 @MainActor
 final class GuidanceAudio {
     private let engine = AVAudioEngine()
-    private let environment = AVAudioEnvironmentNode()
     private let player = AVAudioPlayerNode()
     private let speech = AVSpeechSynthesizer()
-    private var cueBuffer: AVAudioPCMBuffer?
-    private var cuePlaying = false
+    private let leftCue: AVAudioPCMBuffer
+    private let rightCue: AVAudioPCMBuffer
+    private var cueIsLeft: Bool?
 
     init() {
         let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1)!
+        leftCue = Self.makeCue(format: format, pitches: (660, 440))
+        rightCue = Self.makeCue(format: format, pitches: (660, 990))
         engine.attach(player)
-        engine.attach(environment)
-        engine.connect(player, to: environment, format: format)
-        engine.connect(environment, to: engine.mainMixerNode, format: nil)
-        player.renderingAlgorithm = .HRTF
-        player.volume = 0.65
-        let frames = AVAudioFrameCount(48_000 * 0.52)
+        engine.connect(player, to: engine.mainMixerNode, format: format)
+        player.volume = 0.85
+    }
+
+    private static func makeCue(format: AVAudioFormat, pitches: (Double, Double)) -> AVAudioPCMBuffer {
+        let frames = AVAudioFrameCount(format.sampleRate * 0.68)
         let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
         buffer.frameLength = frames
-        if let samples = buffer.floatChannelData?[0] {
-            for index in 0..<Int(frames) {
-                let t = Double(index) / 48_000
-                let envelope = max(0, min(t / 0.035, (0.20 - t) / 0.06, 1))
-                samples[index] = Float(envelope * (0.16 * sin(2 * .pi * 720 * t) + 0.07 * sin(2 * .pi * 1260 * t)))
-            }
+        guard let samples = buffer.floatChannelData?[0] else { return buffer }
+        for index in 0..<Int(frames) {
+            let t = Double(index) / format.sampleRate
+            let second = t >= 0.19
+            let time = second ? t - 0.19 : t
+            let pitch = second ? pitches.1 : pitches.0
+            let envelope = max(0, min(time / 0.025, (0.15 - time) / 0.04, 1))
+            samples[index] = Float(envelope * (0.29 * sin(2 * .pi * pitch * time)
+                                               + 0.08 * sin(4 * .pi * pitch * time)))
         }
-        cueBuffer = buffer
+        return buffer
     }
 
     var outputName: String {
@@ -43,21 +48,21 @@ final class GuidanceAudio {
     }
 
     func cue(offset: Double) throws {
-        let radians = offset * .pi / 180
-        player.position = AVAudio3DPoint(x: Float(sin(radians)), y: 0, z: Float(-cos(radians)))
-        if cuePlaying && engine.isRunning { return }
-        guard let cueBuffer else { return }
+        let left = offset < 0
+        let strength = min(1, max(0.55, abs(offset) / 75))
+        player.pan = Float(left ? -strength : strength)
+        if cueIsLeft == left && engine.isRunning && player.isPlaying { return }
         try activate()
         if !engine.isRunning { try engine.start() }
         player.stop()
-        player.scheduleBuffer(cueBuffer, at: nil, options: .loops)
+        player.scheduleBuffer(left ? leftCue : rightCue, at: nil, options: .loops)
         player.play()
-        cuePlaying = true
+        cueIsLeft = left
     }
 
     func stopCue() {
-        if cuePlaying { player.stop() }
-        cuePlaying = false
+        if cueIsLeft != nil { player.stop() }
+        cueIsLeft = nil
     }
 
     func say(_ text: String) {
