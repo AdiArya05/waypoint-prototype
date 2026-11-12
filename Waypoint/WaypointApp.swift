@@ -1,3 +1,4 @@
+import AppIntents
 import ARKit
 import MapKit
 import SwiftUI
@@ -12,7 +13,7 @@ struct WaypointApp: App {
 
 struct WalkScreen: View {
     @Environment(\.scenePhase) private var scenePhase
-    @State private var model = WalkModel()
+    @State private var model = WalkModel.shared
     @State private var showingImporter = false
     @State private var downloadLink = ""
     @State private var destinationQuery = ""
@@ -28,7 +29,7 @@ struct WalkScreen: View {
                     .pickerStyle(.segmented)
                     Text(model.mode == .practice
                          ? "Try a simulated walk with turn buttons, AirPods, or your iPhone camera."
-                         : "Choose a destination or import a saved route. Try a familiar pedestrian path first.")
+                         : "Say “Siri, start a walk with Waypoint” and tell Siri where you want to go.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                     if let route = model.route {
@@ -91,6 +92,10 @@ struct WalkScreen: View {
                             .disabled(model.route == nil || model.planning)
                     }
                     Text(model.status).font(.callout)
+                    if model.running && !model.arrived && model.mode == .walk {
+                        Text("Say “Siri, repeat directions with Waypoint” or “Siri, stop my Waypoint walk.”")
+                            .font(.subheadline)
+                    }
                 }
                 .frame(maxWidth: 580, alignment: .leading)
                 .padding()
@@ -109,7 +114,7 @@ struct WalkScreen: View {
             }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .background { model.suspend() }
+            if phase == .background { model.didEnterBackground() }
         }
     }
 
@@ -148,6 +153,7 @@ struct WalkScreen: View {
     private var routeControls: some View {
         VStack(alignment: .leading, spacing: 10) {
             TextField("Search for a destination", text: $destinationQuery)
+                .accessibilityHint("Use keyboard dictation to speak a destination.")
                 .textFieldStyle(.roundedBorder)
                 .submitLabel(.search)
                 .onSubmit(search)
@@ -334,5 +340,95 @@ struct RouteSketch: View {
             }
         }
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+
+struct StartWaypointWalk: AppIntent {
+    static let title: LocalizedStringResource = "Start a Walk"
+    static let openAppWhenRun = true
+
+    @Parameter(title: "Destination", requestValueDialog: "Where would you like to walk?")
+    var destination: String
+
+    static var parameterSummary: some ParameterSummary {
+        Summary("Walk to \(\.$destination)")
+    }
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let model = WalkModel.shared
+        guard !model.running || model.arrived else {
+            return .result(dialog: "A walk is already active. Say stop my Waypoint walk to end it first.")
+        }
+        if model.arrived { model.reset() }
+        model.mode = .walk
+        let query = destination.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return .result(dialog: "Please say a destination.") }
+        guard !model.planning else { return .result(dialog: "Waypoint is already looking up a route.") }
+        await model.searchDestinations(query)
+        guard let match = model.destinations.first else {
+            return .result(dialog: "\(model.routeMessage)")
+        }
+        let name = match.name ?? query
+        let address: String?
+        if #available(iOS 26, *) {
+            address = match.address?.fullAddress
+        } else {
+            address = match.placemark.title
+        }
+        let place = [name, address].compactMap { $0 }.joined(separator: ", ")
+        try await requestConfirmation(dialog: "Start walking to \(place)?")
+        guard await model.planWalk(to: match) else {
+            return .result(dialog: "\(model.routeMessage)")
+        }
+        model.begin()
+        return .result(dialog: "Walking to \(name).")
+    }
+}
+
+struct RepeatWaypointDirections: AppIntent {
+    static let title: LocalizedStringResource = "Repeat Directions"
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let model = WalkModel.shared
+        guard model.running else { return .result(dialog: "There’s no active Waypoint walk.") }
+        return .result(dialog: "\(model.spokenDirection)")
+    }
+}
+
+struct StopWaypointWalk: AppIntent {
+    static let title: LocalizedStringResource = "Stop the Walk"
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let model = WalkModel.shared
+        guard model.running else { return .result(dialog: "There’s no active Waypoint walk.") }
+        model.reset()
+        return .result(dialog: "Waypoint walk ended.")
+    }
+}
+
+struct WaypointShortcuts: AppShortcutsProvider {
+    static var appShortcuts: [AppShortcut] {
+        AppShortcut(
+            intent: StartWaypointWalk(),
+            phrases: ["Start a walk with \(.applicationName)"],
+            shortTitle: "Start a Walk",
+            systemImageName: "figure.walk"
+        )
+        AppShortcut(
+            intent: RepeatWaypointDirections(),
+            phrases: ["Repeat directions with \(.applicationName)"],
+            shortTitle: "Repeat Directions",
+            systemImageName: "arrow.clockwise"
+        )
+        AppShortcut(
+            intent: StopWaypointWalk(),
+            phrases: ["Stop my \(.applicationName) walk"],
+            shortTitle: "Stop Walk",
+            systemImageName: "stop.circle"
+        )
     }
 }

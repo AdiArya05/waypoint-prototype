@@ -12,10 +12,12 @@ import WatchConnectivity
 final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSessionDelegate {
     enum Mode: String, CaseIterable { case practice = "Practice", walk = "Live walk" }
     enum AudioStyle: String, CaseIterable { case spatial = "Spatial sound", speech = "Speech only" }
-    var mode: Mode = .practice { didSet { if mode != oldValue { reset() } } }
+    static let shared = WalkModel()
+
+    var mode: Mode = .walk { didSet { if mode != oldValue { reset() } } }
     var audioStyle: AudioStyle = .spatial { didSet { audio.stopCue(); lastSpokenDirection = nil } }
     var savedRoute: WalkRoute?
-    var status = "Ready for practice."
+    var status = "Say “Siri, start a walk with Waypoint.”"
     var motionStatus = "Turn on AirPods motion to try real head tracking."
     var routeMessage = ""
     private(set) var destinations: [MKMapItem] = []
@@ -24,6 +26,12 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
     private var compass: CLHeading?
     private var onRoute = false
     private var routeStarted = false
+    private var retryMotionAt = 0.0
+    private var lastCourse: CLLocation?
+    private var warnedAboutMotionLoss = false
+    private var spokeApproach = false
+    private var spokeLocationLoss = false
+    private var promptedForHeading = false
 
     var distanceToTurn: Double? {
         guard let route, !arrived else { return nil }
@@ -78,8 +86,9 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
         } catch { routeMessage = error.localizedDescription }
     }
 
-    func planWalk(to destination: MKMapItem) async {
-        guard mode == .walk, !running, !planning else { return }
+    @discardableResult
+    func planWalk(to destination: MKMapItem) async -> Bool {
+        guard mode == .walk, !running, !planning else { return false }
         planning = true
         routeMessage = "Getting walking directions…"
         defer {
@@ -104,11 +113,15 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
                 return Point(latitude: coordinate.latitude, longitude: coordinate.longitude)
             }
             let route = try WalkRoute.walking(name: destination.name ?? "Walking route", points: points)
-            guard mode == .walk, !running else { return }
+            guard mode == .walk, !running else { return false }
             try save(route)
             destinations = []
             routeMessage = "Walking route ready. Start near the first point."
-        } catch { routeMessage = error.localizedDescription }
+            return true
+        } catch {
+            routeMessage = error.localizedDescription
+            return false
+        }
     }
 
     private func planningLocation() async throws -> CLLocation {
@@ -199,6 +212,14 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
         if arrived { return "You’ve reached the end of the route." }
         return route?.instruction(from: step) ?? "Import a walking route to begin."
     }
+    var spokenDirection: String {
+        guard mode == .walk && !arrived else { return instruction }
+        guard locationUsable else { return "Waiting for an accurate location. Guidance is paused." }
+        guard onRoute else { return "You’re away from the route. Guidance is paused." }
+        guard let distanceToTurn, let nextManeuver else { return instruction }
+        return instruction + " In about " + String(Int(distanceToTurn.rounded())) + " meters. " + nextManeuver
+    }
+
     var degreesToTurn: Double? {
         guard let route, let heading else { return nil }
         return signedAngle(route.heading(from: step) - heading)
@@ -209,7 +230,9 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
         location.delegate = self
         location.desiredAccuracy = kCLLocationAccuracyBest
         location.activityType = .fitness
-        location.distanceFilter = 1
+        location.distanceFilter = kCLDistanceFilterNone
+        location.pausesLocationUpdatesAutomatically = false
+        location.showsBackgroundLocationIndicator = true
         if let data = try? Data(contentsOf: fileURL),
            let decoded = try? JSONDecoder().decode(WalkRoute.self, from: data),
            decoded.points.count >= 2 { savedRoute = decoded }
@@ -231,7 +254,9 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
         } else {
             status = "Waiting for a location fix near the route start."
             location.requestWhenInUseAuthorization()
+            location.allowsBackgroundLocationUpdates = true
             location.startUpdatingLocation()
+            audio.say("Walking route to " + (route?.name ?? "your destination") + ". Directions continue while Waypoint is in the background.")
             if CLLocationManager.headingAvailable() { location.startUpdatingHeading() }
             enableHeadphones()
         }
@@ -243,10 +268,17 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
         loop = nil
         running = false
         location.stopUpdatingLocation()
+        location.allowsBackgroundLocationUpdates = false
         location.stopUpdatingHeading()
         compass = nil
         onRoute = false
         routeStarted = false
+        retryMotionAt = 0
+        lastCourse = nil
+        warnedAboutMotionLoss = false
+        spokeApproach = false
+        spokeLocationLoss = false
+        promptedForHeading = false
         stopHeadphoneMotion()
         stopCamera()
         audioTest?.cancel()
@@ -277,12 +309,13 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
 
     func enableHeadphones() {
         guard running, !arrived else { return }
+        retryMotionAt = ProcessInfo.processInfo.systemUptime + 5
         if [.denied, .restricted].contains(CMHeadphoneMotionManager.authorizationStatus()) {
             motionStatus = "Allow Motion & Fitness for Waypoint in Settings."
             return
         }
         if !motion.isDeviceMotionAvailable {
-            motionStatus = "No compatible headphones detected. Connect and wear both AirPods, then try again."
+            motionStatus = "Waiting for AirPods. Spoken directions are available."
             return
         }
         stopHeadphoneMotion()
@@ -337,10 +370,16 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
         motionSample = sample
         motionAvailable = true
         headphoneYaw = -(sample.attitude.yaw * 180 / .pi)
+        if mode == .walk, !cameraGuidesAudio, referenceYaw == nil, !promptedForHeading, onRoute {
+            promptedForHeading = true
+            audio.say("AirPods detected. Look straight ahead as you walk to activate head tracking. " + instruction)
+        }
         if let referenceYaw, !cameraGuidesAudio {
             heading = signedAngle(referenceBearing - (sample.attitude.yaw - referenceYaw) * 180 / .pi)
         } else {
-            motionStatus = "AirPods motion received. Turn your head to check the angle, then tap Align AirPods."
+            motionStatus = mode == .walk
+                ? "AirPods detected. Look straight ahead while walking, or align manually."
+                : "AirPods motion received. Turn your head to check the angle, then tap Align AirPods."
         }
     }
 
@@ -509,16 +548,23 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
         lastAudioError = false
         guidanceRequested = true
         if heading == nil {
-            audio.say(mode == .walk ? "Heading unavailable. " + instruction : "Align your AirPods or camera, or use the practice buttons.")
-        } else if audioStyle == .spatial {
+            audio.say(mode == .walk ? instruction : "Align your AirPods or camera, or use the practice buttons.")
+        } else {
             audio.say(instruction)
         }
     }
 
-    func suspend() {
-        guard running else { return }
-        reset()
-        status = "Session paused when the app left the foreground. Start again to recalibrate."
+    func didEnterBackground() {
+        guard running, !arrived else { return }
+        if mode == .walk {
+            let wasUsingCamera = cameraGuidesAudio
+            stopCamera()
+            if wasUsingCamera && heading == nil {
+                audio.say("Camera paused. " + instruction)
+            }
+        } else {
+            reset()
+        }
     }
 
     private func startLoop() {
@@ -539,8 +585,16 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
             updateCamera()
             audioOutput = audio.outputName
         }
-        if usingHeadphones && now - max(lastMotionReceived, headphoneStarted) > 1.5 {
+        if running && !arrived && mode == .walk && !usingHeadphones && now >= retryMotionAt {
+            enableHeadphones()
+        }
+        if usingHeadphones && now - max(lastMotionReceived, headphoneStarted) > 2.5 {
             if motionAvailable {
+                if mode == .walk && !cameraGuidesAudio && !warnedAboutMotionLoss {
+                    warnedAboutMotionLoss = true
+                    promptedForHeading = false
+                    audio.say("AirPods tracking paused. Spoken directions will continue. " + instruction)
+                }
                 referenceYaw = nil
                 if !cameraGuidesAudio { invalidateHeading() }
             }
@@ -548,8 +602,9 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
             headphoneYaw = nil
             switch CMHeadphoneMotionManager.authorizationStatus() {
             case .denied, .restricted: motionStatus = "Motion permission is off. Check Settings."
-            default: motionStatus = "No live motion samples. Check that AirPods are connected and worn."
+            default: motionStatus = "Waiting for live AirPods motion. Spoken directions are available."
             }
+            if mode == .walk && now >= retryMotionAt { stopHeadphoneMotion() }
         }
         guard audioTest == nil else { return }
         evaluateCue(at: now)
@@ -572,7 +627,11 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
             if aligned && running && !arrived { guidanceRequested = true }
             aligned = false
             if mode == .walk && running && !arrived && latestFix != nil && !locationUsable {
-                status = "Location uncertain. Directional confirmation paused."
+                status = "Location uncertain. Directional guidance paused."
+                if routeStarted && !spokeLocationLoss {
+                    spokeLocationLoss = true
+                    audio.say(status)
+                }
             }
             return
         }
@@ -637,6 +696,7 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
             guidanceRequested = false
             status = "Route complete."
             location.stopUpdatingLocation()
+            location.allowsBackgroundLocationUpdates = false
             location.stopUpdatingHeading()
             stopHeadphoneMotion()
             stopCamera()
@@ -647,6 +707,8 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
             audio.say(instruction)
         } else {
             step += 1
+            spokeApproach = false
+            lastCourse = nil
             requestCue()
         }
     }
@@ -670,6 +732,7 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
             }
             routeStarted = true
             guidanceRequested = true
+            audio.say("Walk started. " + instruction)
         }
 
         // Look only at the active segment and its immediate successor.
@@ -681,10 +744,18 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
         onRoute = min(active.distance, next?.distance ?? .infinity) <= tolerance
         guard onRoute else {
             status = "Off the saved route. Guidance paused."
+            lastCourse = nil
             audio.stopCue()
+            if wasOnRoute { audio.say(status) }
             return
         }
         if !wasOnRoute { guidanceRequested = true }
+        spokeLocationLoss = false
+        if referenceYaw == nil && !cameraGuidesAudio { alignUsingWalkingCourse(fix, activeFraction: active.fraction) }
+        if !spokeApproach, let nextManeuver, active.fraction > 0.35, endDistance <= 22 {
+            spokeApproach = true
+            audio.say("In about " + String(Int(endDistance.rounded())) + " meters. " + nextManeuver)
+        }
         if let next {
             let reachedTurn = active.fraction >= 0.65 && endDistance <= min(7, active.length * 0.3)
             let onNext = next.fraction > 0.2 && next.distance + 3 < active.distance && active.fraction >= 0.65
@@ -693,8 +764,35 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
             advance()
         }
         if !arrived && heading == nil {
-            status = "Use the camera or align your AirPods to get directional cues."
+            status = "Spoken directions active. Look straight ahead while walking to align AirPods."
         }
+    }
+
+    private func alignUsingWalkingCourse(_ fix: CLLocation, activeFraction: Double) {
+        guard let sample = motionSample, motionAvailable, promptedForHeading,
+              ProcessInfo.processInfo.systemUptime - lastMotionReceived < 1,
+              let bearing = navigationBearing, (0.15...0.8).contains(activeFraction),
+              fix.speed >= 0.8, fix.course >= 0, (0...20).contains(fix.courseAccuracy),
+              abs(signedAngle(fix.course - bearing)) <= 25 else {
+            lastCourse = nil
+            return
+        }
+        guard let previous = lastCourse else {
+            lastCourse = fix
+            return
+        }
+        guard abs(signedAngle(fix.course - previous.course)) <= 15 else {
+            lastCourse = fix
+            return
+        }
+        guard fix.timestamp.timeIntervalSince(previous.timestamp) >= 2,
+              fix.distance(from: previous) >= 4 else { return }
+        referenceYaw = sample.attitude.yaw
+        referenceBearing = fix.course
+        heading = fix.course
+        warnedAboutMotionLoss = false
+        motionStatus = "AirPods head tracking active."
+        audio.say(motionStatus)
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
