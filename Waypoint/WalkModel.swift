@@ -1,3 +1,4 @@
+import ARKit
 import AVFoundation
 import CoreLocation
 import CoreMotion
@@ -16,6 +17,31 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
     var status = "Ready for practice."
     var motionStatus = "Turn on AirPods motion to try real head tracking."
     var routeMessage = ""
+    private(set) var cameraView: ARSCNView?
+    private(set) var cameraStatus = ""
+    private(set) var cameraYaw: Double?
+    private(set) var headphoneYaw: Double?
+    private(set) var audioOutput = ""
+    private(set) var audioTestStatus = ""
+    private(set) var cameraGuidesAudio = false
+    private var cameraReferenceYaw: Double?
+    private var cameraReferenceBearing = 0.0
+    private var cameraRequest = UUID()
+    private var headphoneRequest = UUID()
+    private var headphoneStarted = 0.0
+    private var lastCameraTick = 0.0
+    private var audioTest: Task<Void, Never>?
+
+    var cameraTurn: Double? {
+        guard let cameraYaw, let cameraReferenceYaw, let route, !arrived,
+              mode == .practice || locationUsable else { return nil }
+        return signedAngle(route.heading(from: step) - cameraReferenceBearing
+                           - signedAngle(cameraYaw - cameraReferenceYaw))
+    }
+
+    var useManualPractice: Bool {
+        mode == .practice && !usingHeadphones && !cameraGuidesAudio
+    }
     var practiceHeading = 0.0
     private(set) var step = 0
     private(set) var running = false
@@ -27,7 +53,7 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
     private(set) var heading: Double?
     private var latestFix: CLLocation?
     private var lastFixReceived = 0.0
-    private var motionTimestamp = -1.0
+    private var motionSample: CMDeviceMotion?
     private var lastMotionReceived = 0.0
     private var referenceYaw: Double?
     private var referenceBearing = 0.0
@@ -89,18 +115,22 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
     func reset() {
         loop?.cancel()
         loop = nil
+        running = false
         location.stopUpdatingLocation()
-        motion.stopDeviceMotionUpdates()
+        stopHeadphoneMotion()
+        stopCamera()
+        audioTest?.cancel()
+        audioTest = nil
+        audioTestStatus = ""
         audio.stop()
         UIApplication.shared.isIdleTimerDisabled = false
-        running = false
         arrived = false
         aligned = false
         step = 0
         latestPoint = nil
         latestFix = nil
         lastFixReceived = 0
-        motionTimestamp = -1
+        motionSample = nil
         lastMotionReceived = 0
         lastSensor = nil
         referenceYaw = nil
@@ -117,35 +147,196 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
 
     func enableHeadphones() {
         guard running, !arrived else { return }
-        guard motion.isDeviceMotionAvailable else {
-            motionStatus = "Headphone motion unavailable. Pair and wear compatible AirPods, then try again."
+        if [.denied, .restricted].contains(CMHeadphoneMotionManager.authorizationStatus()) {
+            motionStatus = "Allow Motion & Fitness for Waypoint in Settings."
             return
         }
-        if usingHeadphones { motion.stopDeviceMotionUpdates() }
+        if !motion.isDeviceMotionAvailable {
+            motionStatus = "No compatible headphones detected. Connect and wear both AirPods, then try again."
+            return
+        }
+        stopHeadphoneMotion()
         motionStatus = "Waiting for AirPods motion. Allow Motion & Fitness if prompted."
         usingHeadphones = true
+        headphoneStarted = ProcessInfo.processInfo.systemUptime
+        if !cameraGuidesAudio { invalidateHeading() }
+        let request = headphoneRequest
+        motion.startDeviceMotionUpdates(to: .main) { [weak self] sample, error in
+            MainActor.assumeIsolated {
+                guard let self, self.headphoneRequest == request else { return }
+                if let sample { self.receiveMotion(sample) }
+                else if let error {
+                    self.stopHeadphoneMotion()
+                    if !self.cameraGuidesAudio { self.invalidateHeading() }
+                    self.motionStatus = "AirPods motion stopped. " + error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func stopHeadphoneMotion() {
+        headphoneRequest = UUID()
+        motion.stopDeviceMotionUpdates()
+        usingHeadphones = false
         motionAvailable = false
-        motionTimestamp = -1
+        motionSample = nil
+        headphoneYaw = nil
+        referenceYaw = nil
         lastMotionReceived = 0
         lastSensor = nil
-        invalidateHeading()
-        motion.startDeviceMotionUpdates()
     }
 
     func usePracticeButtons() {
         guard mode == .practice else { return }
-        motion.stopDeviceMotionUpdates()
-        usingHeadphones = false
-        motionAvailable = false
-        referenceYaw = nil
+        stopHeadphoneMotion()
+        cameraGuidesAudio = false
         heading = practiceHeading
         motionStatus = "Practice buttons active."
         requestCue()
     }
 
+    private func receiveMotion(_ sample: CMDeviceMotion) {
+        let now = ProcessInfo.processInfo.systemUptime
+        if (lastSensor != nil && lastSensor != sample.sensorLocation)
+            || (lastMotionReceived > 0 && now - lastMotionReceived > 1) {
+            referenceYaw = nil
+            if !cameraGuidesAudio { invalidateHeading() }
+        }
+        lastSensor = sample.sensorLocation
+        lastMotionReceived = now
+        motionSample = sample
+        motionAvailable = true
+        headphoneYaw = -(sample.attitude.yaw * 180 / .pi)
+        if let referenceYaw, !cameraGuidesAudio {
+            heading = signedAngle(referenceBearing - (sample.attitude.yaw - referenceYaw) * 180 / .pi)
+        } else {
+            motionStatus = "AirPods motion received. Turn your head to check the angle, then tap Align AirPods."
+        }
+    }
+
+    func startCamera() async {
+        guard running, !arrived, cameraView == nil else { return }
+        guard ARWorldTrackingConfiguration.isSupported else {
+            cameraStatus = "Camera tracking requires a supported iPhone or iPad."
+            return
+        }
+        let request = UUID()
+        cameraRequest = request
+        let allowed = await AVCaptureDevice.requestAccess(for: .video)
+        guard cameraRequest == request, running, !arrived else { return }
+        guard allowed else {
+            cameraStatus = "Allow Camera for Waypoint in Settings."
+            return
+        }
+        let view = ARSCNView()
+        let configuration = ARWorldTrackingConfiguration()
+        configuration.worldAlignment = .gravity
+        view.session.run(configuration)
+        cameraView = view
+        cameraStatus = "Starting camera tracking. Point the rear camera down the route."
+    }
+
+    func stopCamera() {
+        cameraRequest = UUID()
+        cameraView?.session.pause()
+        cameraView = nil
+        cameraStatus = ""
+        cameraReferenceYaw = nil
+        cameraYaw = nil
+        if cameraGuidesAudio {
+            cameraGuidesAudio = false
+            invalidateHeading()
+            if let referenceYaw, let sample = motionSample, motionAvailable {
+                heading = signedAngle(referenceBearing - (sample.attitude.yaw - referenceYaw) * 180 / .pi)
+            } else if useManualPractice && running && !arrived {
+                heading = practiceHeading
+            }
+            if heading != nil { requestCue() }
+        }
+    }
+
+    func alignCamera() {
+        guard let cameraYaw, let route, !arrived else { return }
+        if mode == .walk && !atReference(route) {
+            status = "Return to the start of this leg before aligning."
+            return
+        }
+        cameraReferenceYaw = cameraYaw
+        cameraReferenceBearing = mode == .practice ? practiceHeading : route.heading(from: step)
+        if heading == nil || !usingHeadphones {
+            cameraGuidesAudio = true
+            heading = cameraReferenceBearing
+            requestCue()
+        }
+    }
+
+    func useCameraForAudio() {
+        guard let cameraYaw, let cameraReferenceYaw else { return }
+        cameraGuidesAudio = true
+        heading = signedAngle(cameraReferenceBearing + cameraYaw - cameraReferenceYaw)
+        requestCue()
+    }
+
+    private func updateCamera() {
+        guard let session = cameraView?.session else { return }
+        guard let frame = session.currentFrame,
+              ProcessInfo.processInfo.systemUptime - frame.timestamp < 0.75,
+              case .normal = frame.camera.trackingState else {
+            if cameraYaw != nil {
+                cameraReferenceYaw = nil
+                if cameraGuidesAudio { invalidateHeading() }
+            }
+            cameraYaw = nil
+            cameraStatus = "Camera tracking limited. Hold the phone upright in good light."
+            return
+        }
+        let axis = frame.camera.transform.columns.2
+        guard hypot(axis.x, axis.z) > 0.35 else {
+            cameraYaw = nil
+            if cameraGuidesAudio { invalidateHeading() }
+            cameraStatus = "Point the rear camera along the route."
+            return
+        }
+        let yaw = atan2(Double(-axis.x), Double(axis.z)) * 180 / .pi
+        cameraYaw = yaw
+        if let cameraReferenceYaw {
+            cameraStatus = "Camera aligned to the route."
+            if cameraGuidesAudio {
+                heading = signedAngle(cameraReferenceBearing + yaw - cameraReferenceYaw)
+            }
+        } else {
+            cameraStatus = "Point the camera along this leg, then tap Align camera."
+        }
+    }
+
+    func testAudio() {
+        audioTest?.cancel()
+        audio.stopCue()
+        audioTestStatus = "Testing left, then right."
+        audioTest = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                if !Task.isCancelled { self.audio.stopCue(); self.audioTest = nil }
+            }
+            do {
+                try self.audio.cue(offset: -75)
+                try await Task.sleep(for: .milliseconds(850))
+                self.audio.stopCue()
+                try await Task.sleep(for: .milliseconds(220))
+                try self.audio.cue(offset: 75)
+                try await Task.sleep(for: .milliseconds(850))
+                self.audioTestStatus = "Test finished. You should hear left, then right."
+            } catch is CancellationError {
+                return
+            } catch {
+                self.audioTestStatus = "Audio test failed. " + error.localizedDescription
+            }
+        }
+    }
+
     func calibrate() {
-        guard running, !arrived, let route, let sample = motion.deviceMotion,
-              motionAvailable, sample.timestamp == motionTimestamp else {
+        guard running, !arrived, let route, let sample = motionSample,
+              motionAvailable, ProcessInfo.processInfo.systemUptime - lastMotionReceived < 1 else {
             motionStatus = "Wait for live AirPods motion before aligning."
             return
         }
@@ -153,6 +344,7 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
             status = "Return to the start of this leg before aligning."
             return
         }
+        cameraGuidesAudio = false
         referenceYaw = sample.attitude.yaw
         referenceBearing = mode == .practice ? practiceHeading : route.heading(from: step)
         heading = referenceBearing
@@ -162,7 +354,7 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
     }
 
     func turnPractice(by degrees: Double) {
-        guard mode == .practice, running, !arrived, !usingHeadphones else { return }
+        guard mode == .practice, running, !arrived, useManualPractice else { return }
         practiceHeading = signedAngle(practiceHeading + degrees)
         heading = practiceHeading
         evaluateCue(at: ProcessInfo.processInfo.systemUptime)
@@ -183,7 +375,7 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
         lastAudioError = false
         guidanceRequested = true
         if heading == nil {
-            audio.say(mode == .walk ? "Heading unavailable. " + instruction : "Align your AirPods or use the practice buttons.")
+            audio.say(mode == .walk ? "Heading unavailable. " + instruction : "Align your AirPods or camera, or use the practice buttons.")
         } else if audioStyle == .spatial {
             audio.say(instruction)
         }
@@ -208,28 +400,24 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
 
     private func tick() {
         let now = ProcessInfo.processInfo.systemUptime
-        if usingHeadphones {
-            if let sample = motion.deviceMotion, sample.timestamp != motionTimestamp {
-                if let lastSensor, lastSensor != sample.sensorLocation { invalidateHeading() }
-                if lastMotionReceived > 0, now - lastMotionReceived > 1 { invalidateHeading() }
-                lastSensor = sample.sensorLocation
-                motionTimestamp = sample.timestamp
-                lastMotionReceived = now
-                motionAvailable = true
-                if let referenceYaw {
-                    heading = signedAngle(referenceBearing - (sample.attitude.yaw - referenceYaw) * 180 / .pi)
-                } else {
-                    motionStatus = "Motion received. Face the reference direction and tap Align."
-                }
-            } else if now - lastMotionReceived > 1 {
-                if motionAvailable { invalidateHeading() }
-                motionAvailable = false
-                switch CMHeadphoneMotionManager.authorizationStatus() {
-                case .denied, .restricted: motionStatus = "Motion permission is off. Check Settings."
-                default: motionStatus = "No live motion samples. Check that AirPods are connected and worn."
-                }
+        if now - lastCameraTick > 0.1 {
+            lastCameraTick = now
+            updateCamera()
+            audioOutput = audio.outputName
+        }
+        if usingHeadphones && now - max(lastMotionReceived, headphoneStarted) > 1.5 {
+            if motionAvailable {
+                referenceYaw = nil
+                if !cameraGuidesAudio { invalidateHeading() }
+            }
+            motionAvailable = false
+            headphoneYaw = nil
+            switch CMHeadphoneMotionManager.authorizationStatus() {
+            case .denied, .restricted: motionStatus = "Motion permission is off. Check Settings."
+            default: motionStatus = "No live motion samples. Check that AirPods are connected and worn."
             }
         }
+        guard audioTest == nil else { return }
         evaluateCue(at: now)
     }
 
@@ -238,28 +426,35 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
         heading = nil
         aligned = false
         alignmentStart = nil
+        if running && !arrived { guidanceRequested = true }
         audio.stopCue()
     }
 
     private func evaluateCue(at now: Double) {
-        guard running, guidanceRequested, !arrived, let error = degreesToTurn,
+        guard running, !arrived, let error = degreesToTurn,
               mode == .practice || locationUsable else {
             audio.stopCue()
             alignmentStart = nil
+            aligned = false
             if mode == .walk && running && !arrived && latestFix != nil && !locationUsable {
                 status = "Location uncertain. Directional confirmation paused."
             }
             return
         }
         let magnitude = abs(error)
+        if !guidanceRequested {
+            guard aligned, magnitude > 20 else { return }
+            aligned = false
+            guidanceRequested = true
+        }
         if magnitude <= 14 {
             audio.stopCue()
             if alignmentStart == nil { alignmentStart = now }
             if now - (alignmentStart ?? now) >= 0.35 {
                 aligned = true
                 guidanceRequested = false
-                status = "Facing the path."
-                audio.say("You’re facing the path.")
+                status = cameraGuidesAudio ? "Camera pointing along the route." : "Facing the route."
+                audio.say(cameraGuidesAudio ? "The camera is pointing along the route." : "You’re facing the route.")
             }
         } else {
             alignmentStart = nil
@@ -276,7 +471,11 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
                 catch {
                     if !lastAudioError {
                         lastAudioError = true
-                        status = "Spatial playback unavailable. Select Speech only."
+                        status = "Spatial playback unavailable. Using spoken directions."
+                    }
+                    if lastSpokenDirection != direction {
+                        audio.say(direction)
+                        lastSpokenDirection = direction
                     }
                 }
             }
@@ -303,7 +502,10 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
             guidanceRequested = false
             status = "Route complete."
             location.stopUpdatingLocation()
-            motion.stopDeviceMotionUpdates()
+            stopHeadphoneMotion()
+            stopCamera()
+            audioTest?.cancel()
+            audioTest = nil
             loop?.cancel()
             UIApplication.shared.isIdleTimerDisabled = false
             audio.say(instruction)
@@ -325,7 +527,7 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
             return
         }
         guard heading != nil else {
-            status = atReference(route) ? "Face along this leg and tap Align." : "Move to the start of this leg before aligning."
+            status = atReference(route) ? "Face along this leg and align your AirPods or camera." : "Move to the start of this leg before aligning."
             return
         }
         let start = route.points[step]
@@ -338,6 +540,7 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
         if crossTrack > max(16, fix.horizontalAccuracy * 1.6) || alongTrack < -18 {
             status = "Position is away from the route. Return to a known point."
             invalidateHeading()
+            cameraReferenceYaw = nil
             return
         }
         if alongTrack > min(segmentLength * 0.55, 15),

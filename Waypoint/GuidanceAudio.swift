@@ -31,6 +31,11 @@ final class GuidanceAudio {
         cueBuffer = buffer
     }
 
+    var outputName: String {
+        let outputs = AVAudioSession.sharedInstance().currentRoute.outputs.map(\.portName)
+        return outputs.isEmpty ? "No audio output" : outputs.joined(separator: ", ")
+    }
+
     private func activate() throws {
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])

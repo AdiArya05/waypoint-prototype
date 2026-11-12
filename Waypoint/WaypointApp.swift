@@ -1,3 +1,4 @@
+import ARKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -24,7 +25,7 @@ struct WalkScreen: View {
                     }
                     .pickerStyle(.segmented)
                     Text(model.mode == .practice
-                         ? "Try a simulated walk with turn buttons or real AirPods motion."
+                         ? "Try a simulated walk with turn buttons, AirPods, or your iPhone camera."
                          : "Follow a saved GPX route with live location. Test on a supervised pedestrian path.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
@@ -48,7 +49,7 @@ struct WalkScreen: View {
                                 ForEach(WalkModel.AudioStyle.allCases, id: \.self) { Text($0.rawValue) }
                             }
                             .pickerStyle(.segmented)
-                            if model.mode == .practice && !model.usingHeadphones {
+                            if model.useManualPractice {
                                 ViewThatFits {
                                     HStack { practiceTurns }
                                     VStack(alignment: .leading) { practiceTurns }
@@ -61,7 +62,9 @@ struct WalkScreen: View {
                             }
                             Button("Repeat direction", action: model.requestCue)
                                 .buttonStyle(.bordered)
+                            cameraControls
                             motionControls
+                            audioControls
                         }
                         Button(model.arrived ? "Reset" : "End session", action: model.reset)
                             .buttonStyle(.bordered)
@@ -113,6 +116,62 @@ struct WalkScreen: View {
         .buttonStyle(.bordered)
     }
 
+    private var cameraControls: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            if let view = model.cameraView {
+                CameraPreview(view: view)
+                    .frame(height: 260)
+                    .frame(maxWidth: .infinity)
+                    .overlay(alignment: .bottom) {
+                        if let turn = model.cameraTurn {
+                            Label(cameraDirection(turn), systemImage: cameraArrow(turn))
+                                .font(.headline)
+                                .padding(12)
+                                .foregroundStyle(.white)
+                                .background(.black.opacity(0.85), in: Capsule())
+                                .padding()
+                                .accessibilityAddTraits(.updatesFrequently)
+                        }
+                    }
+                    .clipShape(.rect(cornerRadius: 12))
+                Button("Align camera", action: model.alignCamera).disabled(model.cameraYaw == nil)
+                if !model.cameraGuidesAudio && model.cameraTurn != nil {
+                    Button("Use camera for audio guidance", action: model.useCameraForAudio)
+                }
+                Button("Turn off camera", action: model.stopCamera)
+            } else {
+                Button("Open route camera") { Task { await model.startCamera() } }
+            }
+            if !model.cameraStatus.isEmpty {
+                Text(model.cameraStatus)
+            }
+        }
+        .font(.subheadline)
+        .buttonStyle(.bordered)
+    }
+
+    private func cameraDirection(_ angle: Double) -> String {
+        if abs(angle) <= 14 { return "Along route" }
+        if abs(angle) > 155 { return "Turn around" }
+        return angle < 0 ? "Route to the left" : "Route to the right"
+    }
+
+    private func cameraArrow(_ angle: Double) -> String {
+        if abs(angle) <= 14 { return "arrow.up" }
+        if abs(angle) > 155 { return "arrow.down" }
+        return angle < 0 ? "arrow.left" : "arrow.right"
+    }
+
+    private var audioControls: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            if !model.audioOutput.isEmpty { Text("Audio output: " + model.audioOutput) }
+            Button("Test left and right audio", action: model.testAudio)
+            if !model.audioTestStatus.isEmpty { Text(model.audioTestStatus) }
+        }
+        .font(.subheadline)
+        .buttonStyle(.bordered)
+    }
+
     private var motionControls: some View {
         VStack(alignment: .leading, spacing: 9) {
             Text(model.motionStatus)
@@ -122,15 +181,32 @@ struct WalkScreen: View {
                 Text(model.mode == .practice
                      ? "Face forward, then align. Turn your head to follow the cue."
                      : "At the start of this leg, face along the path and align.")
-                Button("Align AirPods", action: model.calibrate).disabled(!model.motionAvailable)
-                if model.mode == .practice {
-                    Button("Use practice buttons", action: model.usePracticeButtons)
+                if let yaw = model.headphoneYaw {
+                    Text("Live head angle: \(Int(yaw.rounded()))°")
+                        .monospacedDigit()
+                        .accessibilityLabel("Live head angle")
+                        .accessibilityValue("\(Int(yaw.rounded())) degrees")
                 }
+                Button("Align AirPods", action: model.calibrate).disabled(!model.motionAvailable)
+            }
+            if model.mode == .practice && !model.useManualPractice {
+                Button("Use practice buttons", action: model.usePracticeButtons)
             }
         }
         .font(.subheadline)
         .buttonStyle(.bordered)
     }
+}
+
+private struct CameraPreview: UIViewRepresentable {
+    let view: ARSCNView
+
+    func makeUIView(context: Context) -> ARSCNView {
+        view.isAccessibilityElement = false
+        return view
+    }
+
+    func updateUIView(_ uiView: ARSCNView, context: Context) {}
 }
 
 struct RouteSketch: View {
