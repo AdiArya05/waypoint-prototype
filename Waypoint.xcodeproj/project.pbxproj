@@ -1,0 +1,240 @@
+// !$*UTF8*$!
+{
+ archiveVersion = 1;
+ classes = {};
+ objectVersion = 56;
+ objects = {
+  A10000000000000000000001 = {
+   isa = PBXFileReference;
+   path = "GuidanceAudio.swift";
+   sourceTree = "<group>";
+   lastKnownFileType = sourcecode.swift;
+  };
+  A10000000000000000000002 = {
+   isa = PBXBuildFile;
+   fileRef = A10000000000000000000001;
+  };
+  A10000000000000000000003 = {
+   isa = PBXFileReference;
+   path = "Route.swift";
+   sourceTree = "<group>";
+   lastKnownFileType = sourcecode.swift;
+  };
+  A10000000000000000000004 = {
+   isa = PBXBuildFile;
+   fileRef = A10000000000000000000003;
+  };
+  A10000000000000000000005 = {
+   isa = PBXFileReference;
+   path = "WalkModel.swift";
+   sourceTree = "<group>";
+   lastKnownFileType = sourcecode.swift;
+  };
+  A10000000000000000000006 = {
+   isa = PBXBuildFile;
+   fileRef = A10000000000000000000005;
+  };
+  A10000000000000000000007 = {
+   isa = PBXFileReference;
+   path = "WaypointApp.swift";
+   sourceTree = "<group>";
+   lastKnownFileType = sourcecode.swift;
+  };
+  A10000000000000000000008 = {
+   isa = PBXBuildFile;
+   fileRef = A10000000000000000000007;
+  };
+  A10000000000000000000009 = {
+   isa = PBXGroup;
+   path = Waypoint;
+   sourceTree = "<group>";
+   children = (A10000000000000000000001, A10000000000000000000003, A10000000000000000000005, A10000000000000000000007, );
+  };
+  A1000000000000000000000A = {
+   isa = PBXFileReference;
+   explicitFileType = wrapper.application;
+   path = Waypoint.app;
+   sourceTree = BUILT_PRODUCTS_DIR;
+   includeInIndex = 0;
+  };
+  A1000000000000000000000B = {
+   isa = PBXSourcesBuildPhase;
+   files = (A10000000000000000000002, A10000000000000000000004, A10000000000000000000006, A10000000000000000000008, );
+   buildActionMask = 2147483647;
+   runOnlyForDeploymentPostprocessing = 0;
+  };
+  A1000000000000000000000C = {
+   isa = PBXFrameworksBuildPhase;
+   files = ();
+   buildActionMask = 2147483647;
+   runOnlyForDeploymentPostprocessing = 0;
+  };
+  A1000000000000000000000D = {
+   isa = PBXResourcesBuildPhase;
+   files = ();
+   buildActionMask = 2147483647;
+   runOnlyForDeploymentPostprocessing = 0;
+  };
+  A1000000000000000000000E = {
+   isa = XCBuildConfiguration;
+   name = Debug;
+   buildSettings = { PRODUCT_BUNDLE_IDENTIFIER = com.adityaarya.waypointprototype; PRODUCT_NAME = "Waypoint"; GENERATE_INFOPLIST_FILE = YES; SWIFT_VERSION = 5.0; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; MARKETING_VERSION = 0.1; INFOPLIST_KEY_CFBundleDisplayName = Waypoint; SDKROOT = iphoneos; IPHONEOS_DEPLOYMENT_TARGET = 18.0; TARGETED_DEVICE_FAMILY = "1,2"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Waypoint uses your location during a live walk to track route progress."; INFOPLIST_KEY_NSMotionUsageDescription = "Waypoint reads AirPods head motion to guide your turn."; INFOPLIST_KEY_UILaunchScreen_Generation = YES; };
+  };
+  A1000000000000000000000F = {
+   isa = XCBuildConfiguration;
+   name = Release;
+   buildSettings = { PRODUCT_BUNDLE_IDENTIFIER = com.adityaarya.waypointprototype; PRODUCT_NAME = "Waypoint"; GENERATE_INFOPLIST_FILE = YES; SWIFT_VERSION = 5.0; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; MARKETING_VERSION = 0.1; INFOPLIST_KEY_CFBundleDisplayName = Waypoint; SDKROOT = iphoneos; IPHONEOS_DEPLOYMENT_TARGET = 18.0; TARGETED_DEVICE_FAMILY = "1,2"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Waypoint uses your location during a live walk to track route progress."; INFOPLIST_KEY_NSMotionUsageDescription = "Waypoint reads AirPods head motion to guide your turn."; INFOPLIST_KEY_UILaunchScreen_Generation = YES; };
+  };
+  A10000000000000000000010 = {
+   isa = XCConfigurationList;
+   buildConfigurations = (A1000000000000000000000E, A1000000000000000000000F, );
+   defaultConfigurationIsVisible = 0;
+   defaultConfigurationName = Release;
+  };
+  A10000000000000000000013 = {
+   isa = PBXNativeTarget;
+   name = Waypoint;
+   productName = Waypoint;
+   productReference = A1000000000000000000000A;
+   productType = "com.apple.product-type.application";
+   buildConfigurationList = A10000000000000000000010;
+   buildPhases = (A1000000000000000000000B, A1000000000000000000000C, A1000000000000000000000D, A10000000000000000000011, );
+   dependencies = (A10000000000000000000012, );
+   buildRules = ();
+  };
+  A10000000000000000000014 = {
+   isa = PBXFileReference;
+   path = "WaypointWatchApp.swift";
+   sourceTree = "<group>";
+   lastKnownFileType = sourcecode.swift;
+  };
+  A10000000000000000000015 = {
+   isa = PBXBuildFile;
+   fileRef = A10000000000000000000014;
+  };
+  A10000000000000000000016 = {
+   isa = PBXGroup;
+   path = WaypointWatch;
+   sourceTree = "<group>";
+   children = (A10000000000000000000014, );
+  };
+  A10000000000000000000017 = {
+   isa = PBXFileReference;
+   explicitFileType = wrapper.application;
+   path = WaypointWatch.app;
+   sourceTree = BUILT_PRODUCTS_DIR;
+   includeInIndex = 0;
+  };
+  A10000000000000000000018 = {
+   isa = PBXSourcesBuildPhase;
+   files = (A10000000000000000000015, );
+   buildActionMask = 2147483647;
+   runOnlyForDeploymentPostprocessing = 0;
+  };
+  A10000000000000000000019 = {
+   isa = PBXFrameworksBuildPhase;
+   files = ();
+   buildActionMask = 2147483647;
+   runOnlyForDeploymentPostprocessing = 0;
+  };
+  A1000000000000000000001A = {
+   isa = PBXResourcesBuildPhase;
+   files = ();
+   buildActionMask = 2147483647;
+   runOnlyForDeploymentPostprocessing = 0;
+  };
+  A1000000000000000000001B = {
+   isa = XCBuildConfiguration;
+   name = Debug;
+   buildSettings = { PRODUCT_BUNDLE_IDENTIFIER = com.adityaarya.waypointprototype.watchkitapp; PRODUCT_NAME = "WaypointWatch"; GENERATE_INFOPLIST_FILE = YES; SWIFT_VERSION = 5.0; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; MARKETING_VERSION = 0.1; INFOPLIST_KEY_CFBundleDisplayName = Waypoint; SDKROOT = watchos; WATCHOS_DEPLOYMENT_TARGET = 11.0; TARGETED_DEVICE_FAMILY = 4; INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.adityaarya.waypointprototype; INFOPLIST_KEY_WKApplication = YES; SKIP_INSTALL = YES; SUPPORTED_PLATFORMS = "watchos watchsimulator"; };
+  };
+  A1000000000000000000001C = {
+   isa = XCBuildConfiguration;
+   name = Release;
+   buildSettings = { PRODUCT_BUNDLE_IDENTIFIER = com.adityaarya.waypointprototype.watchkitapp; PRODUCT_NAME = "WaypointWatch"; GENERATE_INFOPLIST_FILE = YES; SWIFT_VERSION = 5.0; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; MARKETING_VERSION = 0.1; INFOPLIST_KEY_CFBundleDisplayName = Waypoint; SDKROOT = watchos; WATCHOS_DEPLOYMENT_TARGET = 11.0; TARGETED_DEVICE_FAMILY = 4; INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.adityaarya.waypointprototype; INFOPLIST_KEY_WKApplication = YES; SKIP_INSTALL = YES; SUPPORTED_PLATFORMS = "watchos watchsimulator"; };
+  };
+  A1000000000000000000001D = {
+   isa = XCConfigurationList;
+   buildConfigurations = (A1000000000000000000001B, A1000000000000000000001C, );
+   defaultConfigurationIsVisible = 0;
+   defaultConfigurationName = Release;
+  };
+  A1000000000000000000001E = {
+   isa = PBXNativeTarget;
+   name = WaypointWatch;
+   productName = WaypointWatch;
+   productReference = A10000000000000000000017;
+   productType = "com.apple.product-type.application";
+   buildConfigurationList = A1000000000000000000001D;
+   buildPhases = (A10000000000000000000018, A10000000000000000000019, A1000000000000000000001A, );
+   dependencies = ();
+   buildRules = ();
+  };
+  A10000000000000000000020 = {
+   isa = PBXContainerItemProxy;
+   containerPortal = A1000000000000000000001F;
+   proxyType = 1;
+   remoteGlobalIDString = A1000000000000000000001E;
+   remoteInfo = WaypointWatch;
+  };
+  A10000000000000000000012 = {
+   isa = PBXTargetDependency;
+   target = A1000000000000000000001E;
+   targetProxy = A10000000000000000000020;
+  };
+  A10000000000000000000021 = {
+   isa = PBXBuildFile;
+   fileRef = A10000000000000000000017;
+   settings = { ATTRIBUTES = (RemoveHeadersOnCopy, ); };
+  };
+  A10000000000000000000011 = {
+   isa = PBXCopyFilesBuildPhase;
+   name = "Embed Watch Content";
+   dstPath = "$(CONTENTS_FOLDER_PATH)/Watch";
+   dstSubfolderSpec = 16;
+   files = (A10000000000000000000021, );
+   buildActionMask = 2147483647;
+   runOnlyForDeploymentPostprocessing = 0;
+  };
+  A10000000000000000000023 = {
+   isa = PBXGroup;
+   children = (A10000000000000000000009, A10000000000000000000016, A10000000000000000000022, );
+   sourceTree = "<group>";
+  };
+  A10000000000000000000022 = {
+   isa = PBXGroup;
+   children = (A1000000000000000000000A, A10000000000000000000017, );
+   name = Products;
+   sourceTree = "<group>";
+  };
+  A10000000000000000000024 = {
+   isa = XCBuildConfiguration;
+   name = Debug;
+   buildSettings = { CLANG_ENABLE_MODULES = YES; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; };
+  };
+  A10000000000000000000025 = {
+   isa = XCBuildConfiguration;
+   name = Release;
+   buildSettings = { CLANG_ENABLE_MODULES = YES; SWIFT_OPTIMIZATION_LEVEL = "-O"; };
+  };
+  A10000000000000000000026 = {
+   isa = XCConfigurationList;
+   buildConfigurations = (A10000000000000000000024, A10000000000000000000025, );
+   defaultConfigurationIsVisible = 0;
+   defaultConfigurationName = Release;
+  };
+  A1000000000000000000001F = {
+   isa = PBXProject;
+   buildConfigurationList = A10000000000000000000026;
+   compatibilityVersion = "Xcode 14.0";
+   developmentRegion = en;
+   knownRegions = (en, Base, );
+   mainGroup = A10000000000000000000023;
+   productRefGroup = A10000000000000000000022;
+   projectDirPath = "";
+   projectRoot = "";
+   targets = (A10000000000000000000013, A1000000000000000000001E, );
+  };
+ };
+ rootObject = A1000000000000000000001F;
+}
