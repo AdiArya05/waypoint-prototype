@@ -17,6 +17,17 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
     var mode: Mode = .walk { didSet { if mode != oldValue { reset() } } }
     var audioStyle: AudioStyle = .spatial { didSet { audio.stopCue(); lastSpokenDirection = nil } }
     var savedRoute: WalkRoute?
+    private(set) var offlineMaps: [OfflineWalkingMap] = []
+    private(set) var downloadingMap = false
+    private(set) var offlineMapMessage = ""
+    private(set) var demoActive = false
+    private(set) var demoTrackingLost = false
+    var currentOfflineMap: OfflineWalkingMap? {
+        guard let savedRoute else { return nil }
+        return offlineMaps.first { $0.matches(savedRoute) }
+    }
+    private let offlineMapsURL = URL.applicationSupportDirectory.appendingPathComponent("offline-maps.json")
+
     var status = "Say “Siri, start a walk with Waypoint.”"
     var motionStatus = "Turn on AirPods motion to try real head tracking."
     var routeMessage = ""
@@ -63,6 +74,12 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
         guard let compass, (0...25).contains(compass.headingAccuracy),
               compass.trueHeading >= 0 else { return nil }
         return compass.trueHeading
+    }
+
+    func clearDestinationSearch() {
+        guard !planning else { return }
+        destinations = []
+        routeMessage = ""
     }
 
     func searchDestinations(_ query: String) async {
@@ -114,10 +131,13 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
             }
             let route = try WalkRoute.walking(name: destination.name ?? "Walking route", points: points)
             guard mode == .walk, !running else { return false }
+            try Task.checkCancellation()
             try save(route)
             destinations = []
             routeMessage = "Walking route ready. Start near the first point."
             return true
+        } catch is CancellationError {
+            return false
         } catch {
             routeMessage = error.localizedDescription
             return false
@@ -207,15 +227,27 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
     private let audio = GuidanceAudio()
     private let fileURL = URL.applicationSupportDirectory.appendingPathComponent("saved-route.json")
 
-    var route: WalkRoute? { mode == .practice ? .practice : savedRoute }
+    func requestMapLocation() {
+        location.requestWhenInUseAuthorization()
+    }
+
+    var route: WalkRoute? { mode == .practice ? (demoActive ? .forkDemo : .practice) : savedRoute }
     var instruction: String {
         if arrived { return "You’ve reached the end of the route." }
+        if demoActive && step == 1 { return "Right path ahead." }
         return route?.instruction(from: step) ?? "Import a walking route to begin."
     }
+    var guidancePauseMessage: String? {
+        guard mode == .walk, running, !arrived else { return nil }
+        guard locationUsable else { return "Waiting for an accurate location. Guidance is paused." }
+        guard routeStarted else { return "Move to the route start before following directions." }
+        guard onRoute else { return "You’re away from the route. Guidance is paused." }
+        return nil
+    }
+
     var spokenDirection: String {
         guard mode == .walk && !arrived else { return instruction }
-        guard locationUsable else { return "Waiting for an accurate location. Guidance is paused." }
-        guard onRoute else { return "You’re away from the route. Guidance is paused." }
+        if let guidancePauseMessage { return guidancePauseMessage }
         guard let distanceToTurn, let nextManeuver else { return instruction }
         return instruction + " In about " + String(Int(distanceToTurn.rounded())) + " meters. " + nextManeuver
     }
@@ -227,6 +259,10 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
 
     override init() {
         super.init()
+        if let data = try? Data(contentsOf: offlineMapsURL),
+           let maps = try? JSONDecoder().decode([OfflineWalkingMap].self, from: data) {
+            offlineMaps = maps.filter { $0.route.points.count >= 2 }
+        }
         location.delegate = self
         location.desiredAccuracy = kCLLocationAccuracyBest
         location.activityType = .fitness
@@ -242,15 +278,44 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
         }
     }
 
-    func begin() {
+    func begin() { begin(demo: false) }
+
+    func beginDemo() {
+        guard !running, !planning else { return }
+        mode = .practice
+        begin(demo: true)
+    }
+
+    func endDemo() { mode = .walk }
+
+    func useDemoSpeechFallback() {
+        guard demoActive, running, !arrived, step == 1, !demoTrackingLost else { return }
+        switchDemoToSpeech("Tracking paused. Spoken directions on.")
+    }
+
+    private func switchDemoToSpeech(_ message: String) {
+        stopHeadphoneMotion()
+        demoTrackingLost = true
+        heading = practiceHeading
+        requestCue()
+        let corrective = degreesToTurn.flatMap { abs($0) > 14 ? correction(for: $0) : nil }
+        lastSpokenDirection = corrective
+        audio.say([message, instruction, corrective].compactMap { $0 }.joined(separator: " "))
+    }
+
+    private func begin(demo: Bool) {
         guard route != nil, !running, !planning else { return }
         reset()
+        demoActive = demo
         running = true
         UIApplication.shared.isIdleTimerDisabled = mode == .walk
         if mode == .practice {
             heading = 0
-            status = "Practice started. Use the turn buttons or connect AirPods."
+            status = demo ? "Ready to try the park loop." : "Practice started. Use the turn buttons or connect AirPods."
             requestCue()
+            if demo {
+                audio.say("Offline practice walk. Walk this leg to reach the fork, then follow the sound.")
+            }
         } else {
             status = "Waiting for a location fix near the route start."
             location.requestWhenInUseAuthorization()
@@ -264,6 +329,8 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
     }
 
     func reset() {
+        demoActive = false
+        demoTrackingLost = false
         loop?.cancel()
         loop = nil
         running = false
@@ -329,9 +396,16 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
                 guard let self, self.headphoneRequest == request else { return }
                 if let sample { self.receiveMotion(sample) }
                 else if let error {
+                    if self.demoActive {
+                        self.switchDemoToSpeech("AirPods tracking paused. Spoken directions on.")
+                        return
+                    }
                     self.stopHeadphoneMotion()
                     if !self.cameraGuidesAudio { self.invalidateHeading() }
                     self.motionStatus = "AirPods motion stopped. " + error.localizedDescription
+                    if self.mode == .walk && !self.cameraGuidesAudio {
+                        self.announceMotionFallback()
+                    }
                 }
             }
         }
@@ -519,6 +593,7 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
             referenceBearing = practiceHeading
         }
         cameraGuidesAudio = false
+        demoTrackingLost = false
         referenceYaw = sample.attitude.yaw
         heading = referenceBearing
         motionStatus = "AirPods calibrated. Head turns update the cue."
@@ -547,8 +622,10 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
         lastSpokenDirection = nil
         lastAudioError = false
         guidanceRequested = true
-        if heading == nil {
-            audio.say(mode == .walk ? instruction : "Align your AirPods or camera, or use the practice buttons.")
+        if mode == .walk {
+            audio.say(spokenDirection)
+        } else if heading == nil {
+            audio.say("Align your AirPods or camera, or use the practice buttons.")
         } else {
             audio.say(instruction)
         }
@@ -589,12 +666,12 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
             enableHeadphones()
         }
         if usingHeadphones && now - max(lastMotionReceived, headphoneStarted) > 2.5 {
+            if demoActive {
+                switchDemoToSpeech("AirPods tracking unavailable. Spoken directions on.")
+                return
+            }
             if motionAvailable {
-                if mode == .walk && !cameraGuidesAudio && !warnedAboutMotionLoss {
-                    warnedAboutMotionLoss = true
-                    promptedForHeading = false
-                    audio.say("AirPods tracking paused. Spoken directions will continue. " + instruction)
-                }
+                if mode == .walk && !cameraGuidesAudio { announceMotionFallback() }
                 referenceYaw = nil
                 if !cameraGuidesAudio { invalidateHeading() }
             }
@@ -608,6 +685,13 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
         }
         guard audioTest == nil else { return }
         evaluateCue(at: now)
+    }
+
+    private func announceMotionFallback() {
+        guard !warnedAboutMotionLoss else { return }
+        warnedAboutMotionLoss = true
+        promptedForHeading = false
+        audio.say("AirPods tracking paused. Spoken directions will continue. " + spokenDirection)
     }
 
     private func invalidateHeading() {
@@ -628,6 +712,7 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
             aligned = false
             if mode == .walk && running && !arrived && latestFix != nil && !locationUsable {
                 status = "Location uncertain. Directional guidance paused."
+                if now - lastFixReceived >= 6 { latestFix = nil }
                 if routeStarted && !spokeLocationLoss {
                     spokeLocationLoss = true
                     audio.say(status)
@@ -648,14 +733,16 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
                 aligned = true
                 guidanceRequested = false
                 status = cameraGuidesAudio ? "Camera pointing along the route." : "Facing the route."
-                audio.say(cameraGuidesAudio ? "The camera is pointing along the route." : "You’re facing the route.")
+                if !demoActive || step > 0 {
+                    audio.say(cameraGuidesAudio ? "The camera is pointing along the route." : "Facing the route.")
+                }
             }
         } else {
             alignmentStart = nil
             aligned = false
-            let direction = magnitude > 155 ? "Turn around." : error < 0 ? "Turn left." : "Turn right."
+            let direction = correction(for: error)
             status = direction
-            if audioStyle == .speech {
+            if audioStyle == .speech || demoTrackingLost {
                 if lastSpokenDirection != direction {
                     audio.say(direction)
                     lastSpokenDirection = direction
@@ -674,6 +761,10 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
                 }
             }
         }
+    }
+
+    private func correction(for error: Double) -> String {
+        abs(error) > 155 ? "Turn around." : error < 0 ? "Turn left." : "Turn right."
     }
 
     private var locationUsable: Bool {
@@ -840,6 +931,50 @@ final class WalkModel: NSObject, @preconcurrency CLLocationManagerDelegate, WCSe
         let route = try GPXReader.read(data, name: name.isEmpty ? "Saved route" : name)
         try save(route)
         routeMessage = "Saved for offline use."
+    }
+
+    func downloadOfflineMap() async {
+        guard let route = savedRoute, currentOfflineMap == nil, !downloadingMap else { return }
+        downloadingMap = true
+        offlineMapMessage = ""
+        defer { downloadingMap = false }
+        do {
+            let map = try await OfflineWalkingMap.download(for: route)
+            let updated = [map] + offlineMaps
+            try persistOfflineMaps(updated)
+            offlineMapMessage = "Offline map downloaded."
+        } catch is CancellationError {
+            offlineMapMessage = ""
+        } catch {
+            offlineMapMessage = error.localizedDescription
+        }
+    }
+
+    func selectOfflineMap(_ map: OfflineWalkingMap) -> Bool {
+        guard !planning, !running else { return false }
+        do {
+            try save(map.route)
+            return true
+        } catch {
+            offlineMapMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    func removeOfflineMap(_ map: OfflineWalkingMap) {
+        do {
+            try persistOfflineMaps(offlineMaps.filter { $0.id != map.id })
+            offlineMapMessage = ""
+        } catch {
+            offlineMapMessage = error.localizedDescription
+        }
+    }
+
+    private func persistOfflineMaps(_ maps: [OfflineWalkingMap]) throws {
+        try FileManager.default.createDirectory(at: offlineMapsURL.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try JSONEncoder().encode(maps).write(to: offlineMapsURL, options: .atomic)
+        offlineMaps = maps
     }
 
     private func save(_ route: WalkRoute) throws {

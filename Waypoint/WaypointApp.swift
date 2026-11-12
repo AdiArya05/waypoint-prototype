@@ -7,105 +7,139 @@ import UniformTypeIdentifiers
 @main
 struct WaypointApp: App {
     var body: some Scene {
-        WindowGroup { WalkScreen() }
+        WindowGroup { WalkScreen().preferredColorScheme(.light) }
     }
 }
 
 struct WalkScreen: View {
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var dockSelection
     @State private var model = WalkModel.shared
     @State private var showingImporter = false
-    @State private var downloadLink = ""
-    @State private var destinationQuery = ""
+    @State private var page: WaypointPage = .home
+    @State private var showingSavedPlaces = false
+    @State private var walkMapPosition: MapCameraPosition = .automatic
+    @State private var showingEndConfirmation = false
+    private let walkAccent = Color(red: 0.70, green: 0.31, blue: 0.04)
 
     var body: some View {
         @Bindable var model = model
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    Picker("Route mode", selection: $model.mode) {
-                        ForEach(WalkModel.Mode.allCases, id: \.self) { Text($0.rawValue) }
-                    }
-                    .pickerStyle(.segmented)
-                    Text(model.mode == .practice
-                         ? "Try a simulated walk with turn buttons, AirPods, or your iPhone camera."
-                         : "Say “Siri, start a walk with Waypoint” and tell Siri where you want to go.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    if let route = model.route {
-                        if model.mode == .walk {
-                            Map(interactionModes: [.pan, .zoom]) {
-                                MapPolyline(coordinates: route.points.map(\.coordinate))
-                                    .stroke(.blue, lineWidth: 6)
-                                if let first = route.points.first, let last = route.points.last {
-                                    Marker("Start", systemImage: "location", coordinate: first.coordinate)
-                                    Marker("Destination", systemImage: "flag", coordinate: last.coordinate)
-                                }
-                                if let current = model.latestPoint {
-                                    Annotation("Current location", coordinate: current.coordinate) {
-                                        Circle().fill(.blue).strokeBorder(.white, lineWidth: 2)
-                                            .frame(width: 16, height: 16)
+            ScrollViewReader { proxy in
+                GeometryReader { geometry in
+                    VStack(spacing: 0) {
+                        ScrollView {
+                            if model.mode == .walk && !model.running {
+                                HomeDashboard(
+                                    model: model,
+                                    viewportHeight: max(0, geometry.size.height - homeDockHeight - 16),
+                                    importRoute: { showingImporter = true },
+                                    page: $page,
+                                    showingPlaces: $showingSavedPlaces
+                                )
+                                .padding(.bottom, 8)
+                                .id("home")
+                            } else if model.demoActive, let route = model.route {
+                                offlineDemo(route)
+                            } else if model.mode == .walk, let route = model.route {
+                                activeWalk(route)
+                            } else {
+                                VStack(alignment: .leading, spacing: 20) {
+                                    Picker("Route mode", selection: $model.mode) {
+                                        ForEach(WalkModel.Mode.allCases, id: \.self) { Text($0.rawValue) }
+                                    }
+                                    .pickerStyle(.segmented)
+                                    Text("Try a simulated walk with turn buttons, AirPods, or your iPhone camera.")
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                    if let route = model.route {
+                                        RouteSketch(route: route, step: model.step, position: model.latestPoint)
+                                            .frame(height: 150)
+                                            .accessibilityHidden(true)
+                                        Text("\(route.name) · \(Int(route.length.rounded())) m")
+                                            .font(.subheadline)
+                                    }
+                                    if model.running {
+                                        if !model.arrived {
+                                            Picker("Guidance audio", selection: $model.audioStyle) {
+                                                ForEach(WalkModel.AudioStyle.allCases, id: \.self) { Text($0.rawValue) }
+                                            }
+                                            .pickerStyle(.segmented)
+                                            if model.useManualPractice {
+                                                ViewThatFits {
+                                                    HStack { practiceTurns }
+                                                    VStack(alignment: .leading) { practiceTurns }
+                                                }
+                                            }
+                                            if model.mode == .practice {
+                                                Button("Walk this leg", action: model.walkPracticeLeg)
+                                                    .disabled(!model.aligned)
+                                                    .buttonStyle(.borderedProminent)
+                                            }
+                                            Button("Repeat direction", action: model.requestCue)
+                                                .buttonStyle(.bordered)
+                                            cameraControls
+                                            motionControls
+                                            audioControls
+                                        }
+                                        Button(model.arrived ? "Reset" : "End session", action: model.reset)
+                                            .buttonStyle(.bordered)
+                                    } else {
+                                        Button(model.mode == .practice ? "Start practice" : "Start walk", action: model.begin)
+                                            .buttonStyle(.borderedProminent)
+                                            .disabled(model.route == nil || model.planning)
+                                    }
+                                    Text(model.status).font(.callout)
+                                    if model.running && !model.arrived && model.mode == .walk {
+                                        Text("Say “Siri, repeat directions with Waypoint” or “Siri, stop my Waypoint walk.”")
+                                            .font(.subheadline)
                                     }
                                 }
+                                .frame(maxWidth: 580, alignment: .leading)
+                                .padding()
+                                .frame(maxWidth: .infinity)
                             }
-                            .id(route.name + String(describing: route.points.first) + String(describing: route.points.last))
-                            .frame(height: 200)
-                            .clipShape(.rect(cornerRadius: 16))
-                            .accessibilityHidden(true)
+                        }
+                        .onChange(of: page) { _, _ in proxy.scrollTo("home", anchor: .top) }
+                        .safeAreaInset(edge: .bottom, spacing: 0) {
+                            if model.mode == .walk && model.running {
+                                walkActions
+                            }
+                        }
+                        if model.mode == .walk && !model.running {
+                            homeDock { withAnimation { proxy.scrollTo("home", anchor: .top) } }
+                                .padding(.vertical, 8)
+                        }
+                    }
+                    .background {
+                        if model.mode == .walk && !model.running {
+                            LinearGradient(colors: [Color(white: 0.97), Color(red: 0.94, green: 0.95, blue: 0.96), Color(white: 0.98)],
+                                           startPoint: .topLeading, endPoint: .bottomTrailing)
+                                .ignoresSafeArea()
                         } else {
-                            RouteSketch(route: route, step: model.step, position: model.latestPoint)
-                                .frame(height: 150)
-                                .accessibilityHidden(true)
+                            Color(white: 0.96).ignoresSafeArea()
                         }
-                        Text("\(route.name) · \(Int(route.length.rounded())) m")
-                            .font(.subheadline)
-                    }
-                    if model.mode == .walk && !model.running { routeControls }
-                    if model.running {
-                        if !model.arrived {
-                            Picker("Guidance audio", selection: $model.audioStyle) {
-                                ForEach(WalkModel.AudioStyle.allCases, id: \.self) { Text($0.rawValue) }
-                            }
-                            .pickerStyle(.segmented)
-                            if model.useManualPractice {
-                                ViewThatFits {
-                                    HStack { practiceTurns }
-                                    VStack(alignment: .leading) { practiceTurns }
-                                }
-                            }
-                            if model.mode == .practice {
-                                Button("Walk this leg", action: model.walkPracticeLeg)
-                                    .disabled(!model.aligned)
-                                    .buttonStyle(.borderedProminent)
-                            }
-                            Button("Repeat direction", action: model.requestCue)
-                                .buttonStyle(.bordered)
-                            cameraControls
-                            motionControls
-                            audioControls
-                        }
-                        Button(model.arrived ? "Reset" : "End session", action: model.reset)
-                            .buttonStyle(.bordered)
-                    } else {
-                        Button(model.mode == .practice ? "Start practice" : "Start walk", action: model.begin)
-                            .buttonStyle(.borderedProminent)
-                            .disabled(model.route == nil || model.planning)
-                    }
-                    Text(model.status).font(.callout)
-                    if model.running && !model.arrived && model.mode == .walk {
-                        Text("Say “Siri, repeat directions with Waypoint” or “Siri, stop my Waypoint walk.”")
-                            .font(.subheadline)
                     }
                 }
-                .frame(maxWidth: 580, alignment: .leading)
-                .padding()
-                .frame(maxWidth: .infinity)
             }
             .safeAreaInset(edge: .top, spacing: 0) {
-                if model.running { directionsBanner }
+                if model.running {
+                    if model.mode == .walk, let route = model.route {
+                        walkHeader(route)
+                    } else if !model.demoActive {
+                        directionsBanner
+                    }
+                }
             }
-            .navigationTitle("Waypoint")
+            .toolbar(model.mode == .walk && !model.running ? .hidden : .visible, for: .navigationBar)
+            .navigationTitle(model.mode == .walk && model.running ? "Walking route" : "Waypoint")
             .navigationBarTitleDisplayMode(.inline)
+            .alert("End this walk?", isPresented: $showingEndConfirmation) {
+                Button("Keep walking", role: .cancel) {}
+                Button("End walk", role: .destructive, action: model.reset)
+            }
             .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.init(filenameExtension: "gpx") ?? .xml]) { result in
                 switch result {
                 case .success(let url): model.importGPX(from: url)
@@ -118,84 +152,290 @@ struct WalkScreen: View {
         }
     }
 
+    private let homeDockHeight: CGFloat = 58
+
+    private func homeDock(onHome: @escaping () -> Void) -> some View {
+        HStack(spacing: 2) {
+            dockButton("Home", icon: "house.fill", destination: .home, onReselect: onHome)
+            dockButton("Map", icon: "mappin.circle.fill", destination: .map)
+            dockButton("AirPods", icon: "airpods.gen3", destination: .airPods)
+        }
+        .padding(5)
+        .waypointGlass(in: .capsule, interactive: true)
+        .animation(reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.76), value: page)
+        .sensoryFeedback(.selection, trigger: page)
+        .frame(maxWidth: .infinity, minHeight: homeDockHeight)
+    }
+
+    private func dockButton(_ title: String, icon: String, destination: WaypointPage,
+                            onReselect: @escaping () -> Void = {}) -> some View {
+        let selected = page == destination
+        return Button {
+            if selected { onReselect() } else { page = destination }
+        } label: {
+            VStack(spacing: 3) {
+                Image(systemName: icon)
+                    .font(.system(size: 19, weight: .semibold))
+                    .scaleEffect(selected ? 1.12 : 1)
+                Text(title).font(.caption2.weight(.semibold))
+            }
+            .foregroundStyle(selected ? walkAccent : .primary)
+            .frame(minWidth: 74, minHeight: 48)
+            .background {
+                if selected {
+                    Capsule()
+                        .fill(walkAccent.opacity(0.12))
+                        .matchedGeometryEffect(id: "selectedPage", in: dockSelection)
+                }
+            }
+            .contentShape(.capsule)
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    private func walkHeader(_ route: WalkRoute) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Destination", systemImage: "flag.fill")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(walkAccent)
+                .accessibilityHidden(true)
+            Text(route.name)
+                .font(.title.bold())
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityLabel("Destination, \(route.name)")
+            directionsBanner
+        }
+        .frame(maxWidth: 580, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity)
+        .background(Color(white: 0.96))
+    }
+
+    private func activeWalk(_ route: WalkRoute) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            walkMap(route)
+            if !model.arrived {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Guidance", systemImage: "speaker.wave.2.fill")
+                        .font(.headline)
+                    Text(model.status).font(.body)
+                    Text(model.motionStatus).font(.subheadline).foregroundStyle(.secondary)
+                }
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .waypointGlass(in: .rect(cornerRadius: 22))
+                DisclosureGroup("Camera and audio settings") {
+                    VStack(alignment: .leading, spacing: 13) {
+                        Picker("Guidance audio", selection: Bindable(model).audioStyle) {
+                            ForEach(WalkModel.AudioStyle.allCases, id: \.self) { Text($0.rawValue) }
+                        }
+                        .pickerStyle(.segmented)
+                        cameraControls
+                        motionControls
+                        audioControls
+                    }
+                    .padding(.vertical, 10)
+                }
+                .padding(14)
+                .waypointGlass(in: .rect(cornerRadius: 20))
+            }
+        }
+        .frame(maxWidth: 580, alignment: .leading)
+        .padding(16)
+        .frame(maxWidth: .infinity)
+        .tint(walkAccent)
+        .onAppear { walkMapPosition = .automatic }
+    }
+
+    private func offlineDemo(_ route: WalkRoute) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Offline practice walk")
+                .font(.title.bold())
+                .accessibilityAddTraits(.isHeader)
+            RouteSketch(route: route, step: model.arrived ? route.points.count - 1 : model.step,
+                        position: nil, streets: [WalkRoute.demoBranch], includeStreetBounds: true)
+                .frame(height: 200)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 6) {
+                Label(model.instruction, systemImage: model.maneuverIcon)
+                    .font(.title2.bold())
+                    .accessibilityAddTraits(.isHeader)
+                if !model.arrived {
+                    Text(model.status).font(.body.weight(.medium))
+                    if model.demoTrackingLost {
+                        Label("Spoken directions on", systemImage: "speaker.wave.2")
+                    } else if model.step == 1 && !model.aligned {
+                        Text(model.useManualPractice ? "Follow the sound with the turn buttons."
+                             : "Turn your head toward the sound.")
+                    }
+                }
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .waypointGlass(in: .rect(cornerRadius: 22))
+
+            if !model.arrived {
+                if model.useManualPractice {
+                    ViewThatFits {
+                        HStack { demoTurnButtons }
+                        VStack { demoTurnButtons }
+                    }
+                }
+                demoButton("Walk this leg", icon: "figure.walk", prominent: true, action: model.walkPracticeLeg)
+                    .disabled(!model.aligned)
+                demoButton("Repeat direction", icon: "speaker.wave.2", action: model.requestCue)
+                if model.step == 1 && !model.demoTrackingLost {
+                    demoButton("Simulate tracking loss", icon: "airpods", action: model.useDemoSpeechFallback)
+                }
+                motionControls
+            }
+            demoButton(model.arrived ? "Back to Home" : "Exit demo", icon: "house", action: model.endDemo)
+        }
+        .frame(maxWidth: 540, alignment: .leading)
+        .padding(16)
+        .frame(maxWidth: .infinity)
+        .tint(walkAccent)
+    }
+
+    private var demoTurnButtons: some View {
+        Group {
+            demoButton("Turn left 15°", icon: "arrow.turn.up.left") { model.turnPractice(by: -15) }
+            demoButton("Turn right 15°", icon: "arrow.turn.up.right") { model.turnPractice(by: 15) }
+        }
+    }
+
+    private func demoButton(_ title: String, icon: String, prominent: Bool = false,
+                            action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: icon)
+                .font(.headline)
+                .padding(.horizontal, 14)
+                .frame(maxWidth: .infinity, minHeight: 52)
+                .waypointGlass(in: .capsule, tint: prominent ? walkAccent.opacity(0.2) : nil, interactive: true)
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func walkMap(_ route: WalkRoute) -> some View {
+        if let map = model.currentOfflineMap {
+            OfflineMapPreview(map: map, step: model.step, position: model.latestPoint, height: 252)
+        } else {
+            onlineWalkMap(route)
+        }
+    }
+
+    private func onlineWalkMap(_ route: WalkRoute) -> some View {
+        Map(position: $walkMapPosition, interactionModes: [.pan, .zoom]) {
+            MapPolyline(coordinates: route.points.map(\.coordinate))
+                .stroke(walkAccent, style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
+            if let first = route.points.first, let last = route.points.last {
+                Marker("Start", systemImage: "location", coordinate: first.coordinate)
+                    .tint(walkAccent)
+                Marker("Destination", systemImage: "flag.fill", coordinate: last.coordinate)
+                    .tint(walkAccent)
+            }
+            if let current = model.latestPoint {
+                Annotation("Current location", coordinate: current.coordinate) {
+                    Circle().fill(.blue).strokeBorder(.white, lineWidth: 3)
+                        .frame(width: 19, height: 19)
+                }
+            }
+        }
+        .mapStyle(.standard(elevation: .flat, emphasis: .muted, pointsOfInterest: .excludingAll))
+        .accessibilityHidden(true)
+        .frame(height: 252)
+        .overlay(alignment: .bottomTrailing) {
+            Button {
+                walkMapPosition = .automatic
+            } label: {
+                Label("Show full route", systemImage: "map")
+                    .labelStyle(.iconOnly)
+                    .font(.headline)
+                    .frame(width: 46, height: 46)
+                    .waypointGlass(in: .circle, interactive: true)
+            }
+            .buttonStyle(.plain)
+            .padding(.trailing, 12)
+            .padding(.bottom, 19)
+        }
+        .clipShape(.rect(cornerRadius: 24))
+    }
+
+    private var walkActions: some View {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(spacing: 8))
+            : AnyLayout(HStackLayout(spacing: 10))
+        return layout {
+            if !model.arrived {
+                Button(action: model.requestCue) {
+                    Label("Repeat direction", systemImage: "speaker.wave.2.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 48)
+                        .waypointGlass(in: .capsule, interactive: true)
+                }
+                Button(role: .destructive) {
+                    showingEndConfirmation = true
+                } label: {
+                    Label("End walk", systemImage: "stop.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.red)
+                        .padding(.horizontal, 14)
+                        .frame(maxWidth: dynamicTypeSize.isAccessibilitySize ? .infinity : nil, minHeight: 48)
+                        .waypointGlass(in: .capsule, interactive: true)
+                }
+            } else {
+                Button(action: model.reset) {
+                    Label("Back to Home", systemImage: "house.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 48)
+                        .waypointGlass(in: .capsule, interactive: true)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+        .frame(maxWidth: 580)
+        .frame(maxWidth: .infinity)
+        .background(.regularMaterial)
+    }
+
     private var directionsBanner: some View {
         HStack(spacing: 16) {
-            Image(systemName: model.maneuverIcon)
+            Image(systemName: model.guidancePauseMessage == nil ? model.maneuverIcon : "location.slash")
                 .font(.system(size: 30, weight: .semibold))
                 .frame(width: 48)
+                .foregroundStyle(model.mode == .practice ? .white : walkAccent)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
-                Text(model.instruction)
+                Text(model.guidancePauseMessage ?? model.instruction)
                     .font(.title3.bold())
                     .accessibilityAddTraits(.isHeader)
-                if let distance = model.distanceToTurn {
+                if model.guidancePauseMessage == nil, let distance = model.distanceToTurn {
                     Text("\(Int(distance.rounded())) m to next point")
                         .font(.subheadline.weight(.medium))
                 }
-                if let next = model.nextManeuver {
+                if model.guidancePauseMessage == nil, let next = model.nextManeuver {
                     Text(next).font(.subheadline)
                 }
             }
             Spacer(minLength: 0)
         }
-        .foregroundStyle(.white)
+        .foregroundStyle(model.mode == .practice ? .white : .primary)
         .padding(16)
         .frame(maxWidth: 580, alignment: .leading)
-        .background(Color(red: 0.04, green: 0.29, blue: 0.24), in: .rect(cornerRadius: 18))
-        .padding(.horizontal)
-        .padding(.vertical, 6)
+        .background(model.mode == .practice ? Color(red: 0.04, green: 0.29, blue: 0.24) : .clear,
+                    in: .rect(cornerRadius: 22))
+        .waypointGlass(in: .rect(cornerRadius: 22), tint: model.mode == .practice ? .clear : walkAccent.opacity(0.15))
+        .padding(.horizontal, model.mode == .practice ? 16 : 0)
+        .padding(.vertical, model.mode == .practice ? 6 : 0)
         .frame(maxWidth: .infinity)
-        .background(.background)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("directionsBanner")
-    }
-
-    private var routeControls: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            TextField("Search for a destination", text: $destinationQuery)
-                .accessibilityHint("Use keyboard dictation to speak a destination.")
-                .textFieldStyle(.roundedBorder)
-                .submitLabel(.search)
-                .onSubmit(search)
-            Button("Search from current location", action: search)
-                .disabled(model.planning || destinationQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            if model.planning { ProgressView() }
-            ForEach(Array(model.destinations.enumerated()), id: \.offset) { _, destination in
-                Button {
-                    Task { await model.planWalk(to: destination) }
-                } label: {
-                    VStack(alignment: .leading) {
-                        Text(destination.name ?? "Destination")
-                        if #available(iOS 26, *), let address = destination.address?.fullAddress {
-                            Text(address).font(.caption)
-                        } else if let subtitle = destination.placemark.title {
-                            Text(subtitle).font(.caption)
-                        }
-                    }
-                }
-                .disabled(model.planning)
-            }
-            DisclosureGroup("Use a saved GPX route") {
-                Button("Import GPX from Files") { showingImporter = true }
-                TextField("HTTPS GPX link", text: $downloadLink)
-                    .keyboardType(.URL)
-                    .textContentType(.URL)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .textFieldStyle(.roundedBorder)
-                Button("Download for offline use") { model.downloadGPX(downloadLink) }
-                    .disabled(downloadLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-            .disabled(model.planning)
-            if !model.routeMessage.isEmpty { Text(model.routeMessage).font(.caption) }
-        }
-        .buttonStyle(.bordered)
-    }
-
-    private func search() {
-        let query = destinationQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return }
-        Task { await model.searchDestinations(query) }
+        .accessibilityAction(named: Text("Repeat direction"), model.requestCue)
     }
 
     private var practiceTurns: some View {
@@ -279,8 +519,7 @@ struct WalkScreen: View {
                 if let yaw = model.headphoneYaw {
                     Text("Live head angle: \(Int(yaw.rounded()))°")
                         .monospacedDigit()
-                        .accessibilityLabel("Live head angle")
-                        .accessibilityValue("\(Int(yaw.rounded())) degrees")
+                        .accessibilityHidden(true)
                 }
                 Button("Align AirPods", action: model.calibrate).disabled(!model.motionAvailable)
             }
@@ -308,24 +547,37 @@ struct RouteSketch: View {
     let route: WalkRoute
     let step: Int
     let position: Point?
+    var streets: [[Point]] = []
+    var includeStreetBounds = false
+    var geographicPadding = 0.0
 
     var body: some View {
         Canvas { context, size in
             let points = route.points
             guard let first = points.first, let last = points.last else { return }
             let latitudeScale = max(0.01, cos(first.latitude * .pi / 180))
-            let longitudes = points.map { signedAngle($0.longitude - first.longitude) * latitudeScale }
+            let viewportPoints = includeStreetBounds ? points + streets.flatMap { $0 } : points
+            let longitudes = viewportPoints.map { signedAngle($0.longitude - first.longitude) * latitudeScale }
             let minLon = longitudes.min() ?? 0
             let maxLon = longitudes.max() ?? 0
-            let minLat = points.map(\.latitude).min() ?? 0
-            let maxLat = points.map(\.latitude).max() ?? 0
-            let scale = min((size.width - 32) / max(maxLon - minLon, 0.0000001),
-                            (size.height - 32) / max(maxLat - minLat, 0.0000001))
+            let minLat = viewportPoints.map(\.latitude).min() ?? 0
+            let maxLat = viewportPoints.map(\.latitude).max() ?? 0
+            let scale = min((size.width - 32) / max(maxLon - minLon + 2 * geographicPadding, 0.0000001),
+                            (size.height - 32) / max(maxLat - minLat + 2 * geographicPadding, 0.0000001))
             func plot(_ p: Point) -> CGPoint {
                 let x = signedAngle(p.longitude - first.longitude) * latitudeScale
                 return CGPoint(x: size.width / 2 + (x - (minLon + maxLon) / 2) * scale,
                                y: size.height / 2 - (p.latitude - (minLat + maxLat) / 2) * scale)
             }
+            let streetPath = Path { path in
+                for street in streets {
+                    guard let first = street.first else { continue }
+                    path.move(to: plot(first))
+                    for point in street.dropFirst() { path.addLine(to: plot(point)) }
+                }
+            }
+            context.stroke(streetPath, with: .color(.gray.opacity(0.65)),
+                           style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
             let path = Path { path in
                 path.move(to: plot(first))
                 for point in points.dropFirst() { path.addLine(to: plot(point)) }
@@ -339,7 +591,27 @@ struct RouteSketch: View {
                              with: .color(.orange))
             }
         }
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+        .background(Color(red: 0.93, green: 0.95, blue: 0.91))
+        .clipShape(.rect(cornerRadius: 18))
+    }
+}
+
+
+struct OfflineMapPreview: View {
+    let map: OfflineWalkingMap
+    let step: Int
+    let position: Point?
+    let height: CGFloat
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            RouteSketch(route: map.route, step: step, position: position, streets: map.streets, geographicPadding: 0.00065)
+                .frame(height: height)
+                .accessibilityHidden(true)
+            Link("© OpenStreetMap contributors", destination: URL(string: "https://www.openstreetmap.org/copyright")!)
+                .font(.caption)
+                .frame(minHeight: 44)
+        }
     }
 }
 

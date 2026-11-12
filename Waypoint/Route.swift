@@ -24,6 +24,9 @@ func signedAngle(_ degrees: Double) -> Double {
 }
 
 struct WalkRoute: Codable {
+    static let forkDemo = WalkRoute(name: "Park loop", points: practice.points)
+    static let demoBranch = [practice.points[1], Point(latitude: 0.00064, longitude: -0.00032)]
+
     var name: String
     let points: [Point]
 
@@ -140,5 +143,82 @@ final class GPXReader: NSObject, XMLParserDelegate {
         let tag = element.split(separator: ":").last
         if tag == "trkseg" { trackIndex = nil }
         if tag == "rte" { routeIndex = nil }
+    }
+}
+
+struct OfflineWalkingMap: Codable, Identifiable {
+    let id: UUID
+    let route: WalkRoute
+    let streets: [[Point]]
+
+    func matches(_ other: WalkRoute) -> Bool {
+        route.name == other.name && route.points == other.points
+    }
+
+    private struct Response: Decodable {
+        struct Way: Decodable {
+            struct Node: Decodable { let lat: Double; let lon: Double }
+            let geometry: [Node?]
+        }
+        let elements: [Way]
+        let remark: String?
+    }
+
+    static func download(for route: WalkRoute) async throws -> Self {
+        guard let first = route.points.first,
+              let south = route.points.map(\.latitude).min(),
+              let north = route.points.map(\.latitude).max(),
+              let west = route.points.map(\.longitude).min(),
+              let east = route.points.map(\.longitude).max()
+        else { throw DownloadError.area }
+        let latitudePadding = 0.001
+        let longitudePadding = latitudePadding / max(0.1, cos(first.latitude * .pi / 180))
+        guard north - south <= 0.05, east - west <= 0.05,
+              abs(first.latitude) < 85, west - longitudePadding >= -180, east + longitudePadding <= 180
+        else { throw DownloadError.area }
+        let bounds = [south - latitudePadding, west - longitudePadding,
+                      north + latitudePadding, east + longitudePadding].map { String($0) }.joined(separator: ",")
+        let endpoint = URL(string: "https://overpass.openstreetmap.fr/api/interpreter")!
+        let query = """
+            [out:json][timeout:20][maxsize:16777216];
+            way[highway](\(bounds));out geom(\(bounds));
+            """
+        var form = URLComponents()
+        form.queryItems = [URLQueryItem(name: "data", value: query)]
+        var request = URLRequest(url: endpoint, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.httpBody = form.percentEncodedQuery.map { Data($0.utf8) }
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200, data.count <= 8_000_000
+        else { throw DownloadError.unavailable }
+        let map = try JSONDecoder().decode(Response.self, from: data)
+        guard map.remark == nil else { throw DownloadError.unavailable }
+        let streets = map.elements.flatMap { way -> [[Point]] in
+            var lines: [[Point]] = []
+            var line: [Point] = []
+            for node in way.geometry {
+                if let node {
+                    line.append(Point(latitude: node.lat, longitude: node.lon))
+                } else {
+                    if line.count >= 2 { lines.append(line) }
+                    line.removeAll(keepingCapacity: true)
+                }
+            }
+            if line.count >= 2 { lines.append(line) }
+            return lines
+        }
+        guard !streets.isEmpty else { throw DownloadError.unavailable }
+        return Self(id: UUID(), route: route, streets: streets)
+    }
+
+    enum DownloadError: LocalizedError {
+        case area, unavailable
+        var errorDescription: String? {
+            switch self {
+            case .area: "This route covers too large an area. Try a shorter walking route."
+            case .unavailable: "The map provider couldn’t complete the download. Try again online."
+            }
+        }
     }
 }

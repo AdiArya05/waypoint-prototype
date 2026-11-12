@@ -4,6 +4,10 @@
  classes = {};
  objectVersion = 56;
  objects = {
+  B20000000000000000000003 = { isa = PBXFileReference; path = Assets.xcassets; sourceTree = "<group>"; lastKnownFileType = folder.assetcatalog; };
+  B20000000000000000000004 = { isa = PBXBuildFile; fileRef = B20000000000000000000003; };
+  B20000000000000000000001 = { isa = PBXFileReference; path = HomeDashboard.swift; sourceTree = "<group>"; lastKnownFileType = sourcecode.swift; };
+  B20000000000000000000002 = { isa = PBXBuildFile; fileRef = B20000000000000000000001; };
   A10000000000000000000001 = {
    isa = PBXFileReference;
    path = "GuidanceAudio.swift";
@@ -48,7 +52,7 @@
    isa = PBXGroup;
    path = Waypoint;
    sourceTree = "<group>";
-   children = (A10000000000000000000001, A10000000000000000000003, A10000000000000000000005, A10000000000000000000007, );
+   children = (A10000000000000000000001, A10000000000000000000003, A10000000000000000000005, A10000000000000000000007, B20000000000000000000001, B20000000000000000000003, );
   };
   A1000000000000000000000A = {
    isa = PBXFileReference;
@@ -59,7 +63,7 @@
   };
   A1000000000000000000000B = {
    isa = PBXSourcesBuildPhase;
-   files = (A10000000000000000000002, A10000000000000000000004, A10000000000000000000006, A10000000000000000000008, );
+   files = (A10000000000000000000002, A10000000000000000000004, A10000000000000000000006, A10000000000000000000008, B20000000000000000000002, );
    buildActionMask = 2147483647;
    runOnlyForDeploymentPostprocessing = 0;
   };
@@ -71,19 +75,19 @@
   };
   A1000000000000000000000D = {
    isa = PBXResourcesBuildPhase;
-   files = ();
+   files = (B20000000000000000000004, );
    buildActionMask = 2147483647;
    runOnlyForDeploymentPostprocessing = 0;
   };
   A1000000000000000000000E = {
    isa = XCBuildConfiguration;
    name = Debug;
-   buildSettings = { PRODUCT_BUNDLE_IDENTIFIER = com.adityaarya.waypointprototype; PRODUCT_NAME = "Waypoint"; INFOPLIST_FILE = Waypoint/Background.plist; GENERATE_INFOPLIST_FILE = YES; SWIFT_VERSION = 5.0; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; MARKETING_VERSION = 0.1; INFOPLIST_KEY_CFBundleDisplayName = Waypoint; SDKROOT = iphoneos; IPHONEOS_DEPLOYMENT_TARGET = 18.0; TARGETED_DEVICE_FAMILY = "1,2"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Waypoint uses your location during an active walk, including when your screen is locked, to give walking directions."; INFOPLIST_KEY_NSCameraUsageDescription = "Waypoint uses the live camera to show the next route direction and measure which way the phone is pointing."; INFOPLIST_KEY_NSMotionUsageDescription = "Waypoint reads AirPods head motion to guide your turn."; INFOPLIST_KEY_UILaunchScreen_Generation = YES; };
+   buildSettings = { ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; PRODUCT_BUNDLE_IDENTIFIER = com.adityaarya.waypointprototype; SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG"; PRODUCT_NAME = "Waypoint"; INFOPLIST_FILE = Waypoint/Background.plist; GENERATE_INFOPLIST_FILE = YES; SWIFT_VERSION = 5.0; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; MARKETING_VERSION = 0.1; INFOPLIST_KEY_CFBundleDisplayName = Waypoint; SDKROOT = iphoneos; IPHONEOS_DEPLOYMENT_TARGET = 18.0; TARGETED_DEVICE_FAMILY = "1,2"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Waypoint uses your location during an active walk, including when your screen is locked, to give walking directions."; INFOPLIST_KEY_NSCameraUsageDescription = "Waypoint uses the live camera to show the next route direction and measure which way the phone is pointing."; INFOPLIST_KEY_NSMotionUsageDescription = "Waypoint reads AirPods head motion to guide your turn."; INFOPLIST_KEY_UILaunchScreen_Generation = YES; };
   };
   A1000000000000000000000F = {
    isa = XCBuildConfiguration;
    name = Release;
-   buildSettings = { PRODUCT_BUNDLE_IDENTIFIER = com.adityaarya.waypointprototype; PRODUCT_NAME = "Waypoint"; INFOPLIST_FILE = Waypoint/Background.plist; GENERATE_INFOPLIST_FILE = YES; SWIFT_VERSION = 5.0; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; MARKETING_VERSION = 0.1; INFOPLIST_KEY_CFBundleDisplayName = Waypoint; SDKROOT = iphoneos; IPHONEOS_DEPLOYMENT_TARGET = 18.0; TARGETED_DEVICE_FAMILY = "1,2"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Waypoint uses your location during an active walk, including when your screen is locked, to give walking directions."; INFOPLIST_KEY_NSCameraUsageDescription = "Waypoint uses the live camera to show the next route direction and measure which way the phone is pointing."; INFOPLIST_KEY_NSMotionUsageDescription = "Waypoint reads AirPods head motion to guide your turn."; INFOPLIST_KEY_UILaunchScreen_Generation = YES; };
+   buildSettings = { ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; PRODUCT_BUNDLE_IDENTIFIER = com.adityaarya.waypointprototype; PRODUCT_NAME = "Waypoint"; INFOPLIST_FILE = Waypoint/Background.plist; GENERATE_INFOPLIST_FILE = YES; SWIFT_VERSION = 5.0; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; MARKETING_VERSION = 0.1; INFOPLIST_KEY_CFBundleDisplayName = Waypoint; SDKROOT = iphoneos; IPHONEOS_DEPLOYMENT_TARGET = 18.0; TARGETED_DEVICE_FAMILY = "1,2"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Waypoint uses your location during an active walk, including when your screen is locked, to give walking directions."; INFOPLIST_KEY_NSCameraUsageDescription = "Waypoint uses the live camera to show the next route direction and measure which way the phone is pointing."; INFOPLIST_KEY_NSMotionUsageDescription = "Waypoint reads AirPods head motion to guide your turn."; INFOPLIST_KEY_UILaunchScreen_Generation = YES; };
   };
   A10000000000000000000010 = {
    isa = XCConfigurationList;
